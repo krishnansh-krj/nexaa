@@ -1,0 +1,12 @@
+
+{
+  "name": "nexa",
+  "version-string": "1.0.0",
+  "description": "Disaster Response and Emergency Resource Allocation Platform",
+  "dependencies": [
+    {
+      "name": "drogon",
+      "features": ["mysql", "ctl"]
+    }
+  ]
+}
