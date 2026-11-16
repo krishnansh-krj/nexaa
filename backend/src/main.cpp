@@ -1,6 +1,35 @@
 
 #include <drogon/drogon.h>
 
+#include "config/DatabaseConfig.h"
+
+#include "models/Incident.h"
+#include "models/Resource.h"
+#include "models/EmergencyRequest.h"
+#include "models/ResourceAllocation.h"
+#include "models/IncidentEvent.h"
+#include "models/NetworkNode.h"
+#include "models/NetworkEdge.h"
+
+#include "repositories/BaseRepository.h"
+
+#include "utilities/ApiResponse.h"
+#include "utilities/Validation.h"
+
+#include "repositories/IncidentRepository.h"
+#include "repositories/ResourceRepository.h"
+#include "repositories/RequestRepository.h"
+#include "repositories/AllocationRepository.h"
+#include "repositories/IncidentEventRepository.h"
+#include "repositories/NetworkRepository.h"
+
+#include "services/IncidentService.h"
+#include "services/ResourceService.h"
+#include "services/RequestService.h"
+#include "services/AllocationService.h"
+#include "services/IncidentEventService.h"
+#include "services/NetworkService.h"
+
 #include <cstdlib>
 #include <iostream>
 #include <memory>
