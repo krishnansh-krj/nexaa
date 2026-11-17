@@ -1,40 +1,40 @@
 
 #include <drogon/drogon.h>
 
-#include "config/DatabaseConfig.h"
+#include "config/DatabaseConfig.hpp"
 
-#include "models/Incident.h"
-#include "models/Resource.h"
-#include "models/EmergencyRequest.h"
-#include "models/ResourceAllocation.h"
-#include "models/IncidentEvent.h"
-#include "models/NetworkNode.h"
-#include "models/NetworkEdge.h"
+#include "models/Incident.hpp"
+#include "models/Resource.hpp"
+#include "models/EmergencyRequest.hpp"
+#include "models/ResourceAllocation.hpp"
+#include "models/IncidentEvent.hpp"
+#include "models/NetworkNode.hpp"
+#include "models/NetworkEdge.hpp"
 
-#include "repositories/BaseRepository.h"
-#include "controllers/ApiRoutes.h"
-#include "utilities/ApiResponse.h"
-#include "utilities/Validation.h"
+#include "repositories/BaseRepository.hpp"
+#include "controllers/ApiRoutes.hpp"
+#include "utilities/ApiResponse.hpp"
+#include "utilities/Validation.hpp"
 
-#include "repositories/IncidentRepository.h"
-#include "repositories/ResourceRepository.h"
-#include "repositories/RequestRepository.h"
-#include "repositories/AllocationRepository.h"
-#include "repositories/IncidentEventRepository.h"
-#include "repositories/NetworkRepository.h"
+#include "repositories/IncidentRepository.hpp"
+#include "repositories/ResourceRepository.hpp"
+#include "repositories/RequestRepository.hpp"
+#include "repositories/AllocationRepository.hpp"
+#include "repositories/IncidentEventRepository.hpp"
+#include "repositories/NetworkRepository.hpp"
 
-#include "controllers/ApiRoutes.h"
+#include "controllers/ApiRoutes.hpp"
 
-#include "services/IncidentService.h"
-#include "services/ResourceService.h"
-#include "services/RequestService.h"
-#include "services/AllocationService.h"
-#include "services/IncidentEventService.h"
-#include "services/NetworkService.h"
+#include "services/IncidentService.hpp"
+#include "services/ResourceService.hpp"
+#include "services/RequestService.hpp"
+#include "services/AllocationService.hpp"
+#include "services/IncidentEventService.hpp"
+#include "services/NetworkService.hpp"
 
-#include "data_structures/Graph.h"
-#include "data_structures/MinHeap.h"
-#include "algorithms/Dijkstra.h"
+#include "data_structures/Graph.hpp"
+#include "data_structures/MinHeap.hpp"
+#include "algorithms/Dijkstra.hpp"
 
 #include <cstdlib>
 #include <iostream>

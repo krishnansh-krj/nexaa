@@ -1,10 +1,10 @@
 
 #include <iostream>
 
-#include "data_structures/Graph.h"
-#include "algorithms/BFS.h"
-#include "algorithms/DFS.h"
-#include "algorithms/Dijkstra.h"
+#include "data_structures/Graph.hpp"
+#include "algorithms/BFS.hpp"
+#include "algorithms/DFS.hpp"
+#include "algorithms/Dijkstra.hpp"
 
 int main()
 {
