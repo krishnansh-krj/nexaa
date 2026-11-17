@@ -12,7 +12,7 @@
 #include "models/NetworkEdge.h"
 
 #include "repositories/BaseRepository.h"
-
+#include "controllers/ApiRoutes.h"
 #include "utilities/ApiResponse.h"
 #include "utilities/Validation.h"
 
@@ -23,12 +23,18 @@
 #include "repositories/IncidentEventRepository.h"
 #include "repositories/NetworkRepository.h"
 
+#include "controllers/ApiRoutes.h"
+
 #include "services/IncidentService.h"
 #include "services/ResourceService.h"
 #include "services/RequestService.h"
 #include "services/AllocationService.h"
 #include "services/IncidentEventService.h"
 #include "services/NetworkService.h"
+
+#include "data_structures/Graph.h"
+#include "data_structures/MinHeap.h"
+#include "algorithms/Dijkstra.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -55,6 +61,9 @@ int main()
         password,
         2
     );
+
+    // Register all NEXA API routes
+    nexa::ApiRoutes::registerRoutes();
 
     // API 1: Backend health check
     drogon::app().registerHandler(

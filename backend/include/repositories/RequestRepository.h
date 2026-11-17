@@ -71,5 +71,44 @@ public:
             quantity
         );
     }
+
+    void findPrioritizable(
+        ResultCallback onSuccess,
+        ErrorCallback onError) const
+    {
+        execute(
+            "SELECT "
+            "er.request_id, "
+            "er.incident_id, "
+            "er.request_type, "
+            "er.description, "
+            "er.priority AS request_priority, "
+            "er.quantity_required, "
+            "er.requested_at, "
+            "i.severity AS incident_severity, "
+            "COALESCE(a.allocated_units, 0) AS allocated_units, "
+            "(er.quantity_required - "
+            "COALESCE(a.allocated_units, 0)) AS outstanding_units "
+            "FROM emergency_requests er "
+            "INNER JOIN incidents i "
+            "ON i.incident_id = er.incident_id "
+            "LEFT JOIN ("
+            " SELECT request_id, "
+            " SUM(allocated_units) AS allocated_units "
+            " FROM resource_allocations "
+            " WHERE status IN "
+            " ('ASSIGNED', 'DISPATCHED', 'ON_SITE') "
+            " GROUP BY request_id"
+            ") a ON a.request_id = er.request_id "
+            "WHERE i.status = 'ACTIVE' "
+            "AND er.status IN ('PENDING', 'PROCESSING') "
+            "AND er.quantity_required > "
+            "COALESCE(a.allocated_units, 0) "
+            "ORDER BY er.requested_at ASC",
+            std::move(onSuccess),
+            std::move(onError)
+        );
+    }
+
 };
 }

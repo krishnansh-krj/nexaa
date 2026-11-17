@@ -1,0 +1,18 @@
+Change Dir: 'C:/dev/NEXA/build'
+
+Run Clean Command: C:/ProgramData/chocolatey/lib/ninja/tools/ninja.exe -v clean
+[1/1] C:\ProgramData\chocolatey\lib\ninja\tools\ninja.exe  -t clean 
+Cleaning... 2 files.
+
+Run Build Command(s): C:/ProgramData/chocolatey/lib/ninja/tools/ninja.exe -v
+[1/2] "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.52.37025\bin\Hostx64\x64\cl.exe"  /nologo /TP  -IC:\dev\NEXA\backend\include -external:IC:\dev\NEXA\build\vcpkg_installed\x64-windows\include -external:W0 /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Zi /wd4251 /wd4275 /showIncludes /Fobackend\CMakeFiles\nexa_backend.dir\src\main.cpp.obj /Fdbackend\CMakeFiles\nexa_backend.dir\ /FS -c C:\dev\NEXA\backend\src\main.cpp
+FAILED: [code=2] backend/CMakeFiles/nexa_backend.dir/src/main.cpp.obj 
+"C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.52.37025\bin\Hostx64\x64\cl.exe"  /nologo /TP  -IC:\dev\NEXA\backend\include -external:IC:\dev\NEXA\build\vcpkg_installed\x64-windows\include -external:W0 /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++20 -MDd -Zi /wd4251 /wd4275 /showIncludes /Fobackend\CMakeFiles\nexa_backend.dir\src\main.cpp.obj /Fdbackend\CMakeFiles\nexa_backend.dir\ /FS -c C:\dev\NEXA\backend\src\main.cpp
+C:\dev\NEXA\backend\include\services/ResourceMatchingService.h(202): error C3493: 'requestId' cannot be implicitly captured because no default capture mode has been specified
+C:\dev\NEXA\backend\include\services/ResourceMatchingService.h(202): error C2326: 'void nexa::ResourceMatchingService::findMatches::<lambda_1>::operator ()(const drogon::orm::Result &) const': function cannot access 'requestId'
+C:\dev\NEXA\backend\include\controllers/ApiRoutes.h(717): error C2664: 'void nexa::ResourceMatchingService::findMatches(const std::shared_ptr<drogon::orm::DbClient> &,unsigned __int64,nexa::ResourceMatchingService::SuccessCallback,nexa::ResourceMatchingService::ErrorCallback,nexa::ResourceMatchingService::FailureCallback)': cannot convert argument 5 from 'nexa::ApiRoutes::registerRequestRoutes::<lambda_3>::()::<lambda_3>' to 'nexa::ResourceMatchingService::FailureCallback'
+C:\dev\NEXA\backend\include\controllers/ApiRoutes.h(740): note: No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+C:\dev\NEXA\backend\include\services/ResourceMatchingService.h(70): note: see declaration of 'nexa::ResourceMatchingService::findMatches'
+C:\dev\NEXA\backend\include\controllers/ApiRoutes.h(717): note: while trying to match the argument list '(drogon::orm::DbClientPtr, unsigned __int64, nexa::ApiRoutes::registerRequestRoutes::<lambda_3>::()::<lambda_1>, nexa::ApiRoutes::registerRequestRoutes::<lambda_3>::()::<lambda_2>, nexa::ApiRoutes::registerRequestRoutes::<lambda_3>::()::<lambda_3>)'
+ninja: build stopped: subcommand failed.
+
