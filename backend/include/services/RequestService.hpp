@@ -15,6 +15,10 @@ public:
     void getAll(BaseRepository::ResultCallback success, BaseRepository::ErrorCallback error);
     void getById(unsigned long long id, BaseRepository::ResultCallback success, BaseRepository::ErrorCallback error);
     void getByIncident(unsigned long long incidentId, BaseRepository::ResultCallback success, BaseRepository::ErrorCallback error);
+    void getPrioritizable(
+    BaseRepository::ResultCallback success,
+    BaseRepository::ErrorCallback error
+);
     bool validateNewRequest(const std::string& type, const std::string& priority, unsigned int quantity) const;
 };
 } // namespace nexa

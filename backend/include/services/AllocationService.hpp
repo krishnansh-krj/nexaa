@@ -17,7 +17,6 @@ private:
   explicit CompletionState(OperationCallback cb);
   void finish(bool success, const std::string& message);
  };
- static std::string normalizeType(std::string value);
  static void refreshRequestStatus(const std::shared_ptr<drogon::orm::Transaction>& trans, unsigned long long requestId, std::function<void()> onSuccess, std::function<void(const std::string&)> onFailure);
 public:
  explicit AllocationService(std::shared_ptr<drogon::orm::DbClient> db);

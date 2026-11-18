@@ -1,142 +1,126 @@
 #include "services/AllocationService.hpp"
-#include <algorithm>
-#include <cctype>
+#include "utilities/TypeMapping.hpp"
 #include <utility>
 namespace nexa {
+AllocationService::AllocationService(
+    std::shared_ptr<drogon::orm::DbClient> db)
+    : dbClient(std::move(db)) {}
+
 AllocationService::CompletionState::CompletionState(OperationCallback cb) : callback(std::move(cb)) {}
 void AllocationService::CompletionState::finish(bool success, const std::string& message) { if (!completed.exchange(true) && callback) callback(success, message); }
-std::string AllocationService::normalizeType(std::string value)
-{
-        auto notSpace = [](unsigned char ch)
-        {
-            return !std::isspace(ch);
-        };
 
-        value.erase(
-            value.begin(),
-            std::find_if(value.begin(), value.end(), notSpace)
-        );
-
-        value.erase(
-            std::find_if(value.rbegin(), value.rend(), notSpace).base(),
-            value.end()
-        );
-
-        std::transform(
-            value.begin(),
-            value.end(),
-            value.begin(),
-            [](unsigned char ch)
-            {
-                return static_cast<char>(std::toupper(ch));
-            }
-        );
-
-        return value;
-    }
 
 void AllocationService::refreshRequestStatus(
-        const std::shared_ptr<drogon::orm::Transaction>& trans,
-        unsigned long long requestId,
-        std::function<void()> onSuccess,
-        std::function<void(const std::string&)> onFailure)
+    const std::shared_ptr<drogon::orm::Transaction>& trans,
+    unsigned long long requestId,
+    std::function<void()> onSuccess,
+    std::function<void(const std::string&)> onFailure)
 {
-        trans->execSqlAsync(
-            "SELECT quantity_required "
-            "FROM emergency_requests "
-            "WHERE request_id = ? FOR UPDATE",
+    trans->execSqlAsync(
+        "SELECT quantity_required, status "
+        "FROM emergency_requests "
+        "WHERE request_id = ? FOR UPDATE",
 
-            [=](const drogon::orm::Result& requestResult)
-            {
-                if (requestResult.empty())
-                {
-                    if (onFailure)
-                        onFailure("Linked emergency request not found");
-                    return;
-                }
-
-                const unsigned int quantityRequired =
-                    requestResult[0]["quantity_required"]
-                        .as<unsigned int>();
-
-                if (quantityRequired == 0)
-                {
-                    if (onFailure)
-                        onFailure(
-                            "Emergency request has invalid required quantity"
-                        );
-                    return;
-                }
-
-                trans->execSqlAsync(
-                    "SELECT COALESCE(SUM(allocated_units), 0) "
-                    "AS active_units "
-                    "FROM resource_allocations "
-                    "WHERE request_id = ? "
-                    "AND status IN ('ASSIGNED', 'DISPATCHED', 'ON_SITE')",
-
-                    [=](const drogon::orm::Result& sumResult)
-                    {
-                        const unsigned long long activeUnits =
-                            sumResult[0]["active_units"]
-                                .as<unsigned long long>();
-
-                        const std::string newStatus =
-                            activeUnits >= quantityRequired
-                                ? "FULFILLED"
-                                : (activeUnits > 0
-                                    ? "PROCESSING"
-                                    : "PENDING");
-
-                        trans->execSqlAsync(
-                            "UPDATE emergency_requests "
-                            "SET status = ? WHERE request_id = ?",
-
-                            [onSuccess](const drogon::orm::Result&)
-                            {
-                                if (onSuccess)
-                                    onSuccess();
-                            },
-
-                            [onFailure](
-                                const drogon::orm::DrogonDbException& e)
-                            {
-                                if (onFailure)
-                                    onFailure(e.base().what());
-                            },
-
-                            newStatus,
-                            requestId
-                        );
-                    },
-
-                    [onFailure](
-                        const drogon::orm::DrogonDbException& e)
-                    {
-                        if (onFailure)
-                            onFailure(e.base().what());
-                    },
-
-                    requestId
-                );
-            },
-
-            [onFailure](
-                const drogon::orm::DrogonDbException& e)
+        [=](const drogon::orm::Result& requestResult)
+        {
+            if (requestResult.empty())
             {
                 if (onFailure)
-                    onFailure(e.base().what());
-            },
+                    onFailure("Linked emergency request not found");
+                return;
+            }
 
-            requestId
-        );
-    }
+            const std::string currentStatus =
+                requestResult[0]["status"].as<std::string>();
 
-    AllocationService::AllocationService(
-        std::shared_ptr<drogon::orm::DbClient> db)
-        : dbClient(std::move(db))
-{
-    }
+            // A cancelled request must never be automatically reopened
+            // by an allocation or release operation.
+            if (currentStatus == "CANCELLED")
+            {
+                if (onSuccess)
+                    onSuccess();
+                return;
+            }
+
+            const unsigned int quantityRequired =
+                requestResult[0]["quantity_required"]
+                    .as<unsigned int>();
+
+            if (quantityRequired == 0)
+            {
+                if (onFailure)
+                {
+                    onFailure(
+                        "Emergency request has invalid required quantity");
+                }
+                return;
+            }
+
+            trans->execSqlAsync(
+                "SELECT COALESCE(SUM(allocated_units), 0) "
+                "AS active_units "
+                "FROM resource_allocations "
+                "WHERE request_id = ? "
+                "AND status IN ('ASSIGNED', 'DISPATCHED', 'ON_SITE')",
+
+                [=](const drogon::orm::Result& sumResult)
+                {
+                    const unsigned long long activeUnits =
+                        sumResult[0]["active_units"]
+                            .as<unsigned long long>();
+
+                    const std::string newStatus =
+                        activeUnits >= quantityRequired
+                            ? "FULFILLED"
+                            : (activeUnits > 0
+                                ? "PROCESSING"
+                                : "PENDING");
+
+                    trans->execSqlAsync(
+                        "UPDATE emergency_requests "
+                        "SET status = ? "
+                        "WHERE request_id = ? "
+                        "AND status <> 'CANCELLED'",
+
+                        [onSuccess](const drogon::orm::Result&)
+                        {
+                            if (onSuccess)
+                                onSuccess();
+                        },
+
+                        [onFailure](
+                            const drogon::orm::DrogonDbException& e)
+                        {
+                            if (onFailure)
+                                onFailure(e.base().what());
+                        },
+
+                        newStatus,
+                        requestId
+                    );
+                },
+
+                [onFailure](
+                    const drogon::orm::DrogonDbException& e)
+                {
+                    if (onFailure)
+                        onFailure(e.base().what());
+                },
+
+                requestId
+            );
+        },
+
+        [onFailure](
+            const drogon::orm::DrogonDbException& e)
+        {
+            if (onFailure)
+                onFailure(e.base().what());
+        },
+
+        requestId
+    );
+}
 
     void AllocationService::allocate(
         unsigned long long incidentId,
@@ -271,12 +255,11 @@ void AllocationService::refreshRequestStatus(
                                         // STEP 4: Decrease inventory.
                                         trans->execSqlAsync(
                                             "UPDATE resources SET "
-                                            "available_units = "
-                                            "available_units - ?, "
                                             "status = CASE "
                                             "WHEN available_units = ? "
                                             "THEN 'DEPLOYED' "
-                                            "ELSE 'AVAILABLE' END "
+                                            "ELSE 'AVAILABLE' END, "
+                                            "available_units = available_units - ? "
                                             "WHERE resource_id = ? "
                                             "AND available_units >= ?",
 
@@ -417,14 +400,13 @@ void AllocationService::refreshRequestStatus(
                                                 .as<std::string>();
 
                                         // STEP 3B: Validate resource type.
-                                        if (normalizeType(requestType) !=
-                                            normalizeType(resourceType))
+                                        if (!isCompatibleResource(requestType, resourceType))
                                         {
                                             fail(
-                                                "Resource type does not match "
-                                                "the emergency request type"
+                                                "Resource type is not compatible "
+                                                "with the emergency request type"
                                             );
-                                            return;
+                                             return;
                                         }
 
                                         if (requestStatus != "PENDING" &&

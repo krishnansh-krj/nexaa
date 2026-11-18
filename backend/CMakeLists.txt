@@ -65,5 +65,24 @@ if(NEXA_BUILD_TESTS)
     )
     target_include_directories(nexa_request_prioritizer_test PRIVATE "${NEXA_INCLUDE_DIR}")
     target_compile_features(nexa_request_prioritizer_test PRIVATE cxx_std_20)
+    
     add_test(NAME nexa_request_prioritizer_test COMMAND nexa_request_prioritizer_test)
+
+    # Type Mapping Unit Test
+    add_executable(nexa_type_mapping_test
+        tests/type_mapping_test.cpp
+    )
+
+    target_include_directories(nexa_type_mapping_test
+        PRIVATE "${NEXA_INCLUDE_DIR}"
+    )
+
+    target_compile_features(nexa_type_mapping_test
+        PRIVATE cxx_std_20
+    )
+
+    add_test(
+        NAME nexa_type_mapping_test
+        COMMAND nexa_type_mapping_test
+    )
 endif()

@@ -1,4 +1,5 @@
 #include "controllers/ApiRoutes.hpp"
+#include "utilities/TypeMapping.hpp"
 
 
 namespace nexa
@@ -510,17 +511,51 @@ void ApiRoutes::registerResourceRoutes()
                     return;
                 }
 
+                // Validate all resource fields before reading them.
+                if (!json->isMember("resource_code") ||
+                    !(*json)["resource_code"].isString() ||
+                    !json->isMember("resource_name") ||
+                    !(*json)["resource_name"].isString() ||
+                    !json->isMember("resource_type") ||
+                    !(*json)["resource_type"].isString())
+                {
+                    callback(ApiResponse::error(
+                        "Resource code, name and type must be strings",
+                        drogon::k400BadRequest,
+                        "INVALID_RESOURCE_FIELDS"));
+                    return;
+                }
+
+                if (!json->isMember("total_units") ||
+                    !(*json)["total_units"].isUInt())
+                {
+                    callback(ApiResponse::error(
+                        "Total units must be a valid unsigned integer",
+                        drogon::k400BadRequest,
+                        "INVALID_TOTAL_UNITS"));
+                    return;
+                }
+
                 std::string code = Validation::trim(
                     (*json)["resource_code"].asString());
 
                 std::string name = Validation::trim(
                     (*json)["resource_name"].asString());
 
-                std::string type = Validation::trim(
+                std::string type = normalizeType(
                     (*json)["resource_type"].asString());
 
-                int totalUnits =
-                    (*json)["total_units"].asInt();
+                const unsigned int totalUnits =
+                    (*json)["total_units"].asUInt();
+
+                if (totalUnits == 0)
+                {
+                    callback(ApiResponse::error(
+                        "Total units must be greater than zero",
+                        drogon::k400BadRequest,
+                        "INVALID_TOTAL_UNITS"));
+                    return;
+                }
 
                 if (code.empty() || name.empty())
                 {
@@ -554,13 +589,6 @@ void ApiRoutes::registerResourceRoutes()
                     return;
                 }
 
-                if (totalUnits <= 0)
-                {
-                    callback(ApiResponse::error(
-                        "Total units must be greater than zero"));
-                    return;
-                }
-
                 ResourceRepository repo(
                     drogon::app().getDbClient());
 
@@ -568,7 +596,7 @@ void ApiRoutes::registerResourceRoutes()
                     code,
                     name,
                     type,
-                    static_cast<unsigned int>(totalUnits),
+                    totalUnits,
 
                     [callback](const drogon::orm::Result& result)
                     {
@@ -804,26 +832,59 @@ void ApiRoutes::registerRequestRoutes()
             {
                 auto json = request->getJsonObject();
 
-                if (!json)
-                {
-                    callback(ApiResponse::error("Invalid JSON"));
-                    return;
-                }
+if (!json)
+{
+    callback(ApiResponse::error("Invalid JSON"));
+    return;
+}
 
+// 1. Validate request_type
+if (!json->isMember("request_type") ||
+    !(*json)["request_type"].isString())
+{
+    callback(ApiResponse::error(
+        "A valid request_type string is required",
+        drogon::k400BadRequest,
+        "INVALID_REQUEST_TYPE"));
+    return;
+}
+
+                // 2. Validate incident_id and quantity_required.
+                // isUInt64/isUInt reject negative values and out-of-range
+                // values before conversion.
                 if (!json->isMember("incident_id") ||
-                    !(*json)["incident_id"].isIntegral() ||
+                    !(*json)["incident_id"].isUInt64() ||
                     !json->isMember("quantity_required") ||
-                    !(*json)["quantity_required"].isIntegral())
+                    !(*json)["quantity_required"].isUInt())
                 {
                     callback(ApiResponse::error(
-                        "Incident ID and quantity are required"));
+                        "Incident ID must be a positive integer and "
+                        "quantity must be a valid unsigned integer",
+                        drogon::k400BadRequest,
+                        "INVALID_NUMERIC_FIELDS"));
                     return;
                 }
 
-                auto incidentId =
+                // 3. Validate description and priority.
+                if (!json->isMember("description") ||
+                    !(*json)["description"].isString() ||
+                    !json->isMember("priority") ||
+                    !(*json)["priority"].isString())
+                {
+                    callback(ApiResponse::error(
+                        "Description and priority must be valid strings",
+                        drogon::k400BadRequest,
+                        "INVALID_REQUEST_DETAILS"));
+                    return;
+                }
+
+                const unsigned long long incidentId =
                     (*json)["incident_id"].asUInt64();
 
-                std::string type = Validation::trim(
+                const unsigned int quantity =
+                    (*json)["quantity_required"].asUInt();
+
+                std::string type = normalizeType(
                     (*json)["request_type"].asString());
 
                 std::string description = Validation::trim(
@@ -832,13 +893,11 @@ void ApiRoutes::registerRequestRoutes()
                 std::string priority = Validation::trim(
                     (*json)["priority"].asString());
 
-                int quantity =
-                    (*json)["quantity_required"].asInt();
-
+                // 4. Apply business validation.
                 if (incidentId == 0 ||
-                    type.empty() ||
+                    quantity == 0 ||
+                    !isValidRequestType(type) ||
                     description.empty() ||
-                    quantity <= 0 ||
                     type.size() > 100 ||
                     description.size() > 1000 ||
                     !Validation::isValidEnum(
@@ -846,22 +905,37 @@ void ApiRoutes::registerRequestRoutes()
                         {"LOW", "MEDIUM", "HIGH", "CRITICAL"}))
                 {
                     callback(ApiResponse::error(
-                        "Invalid emergency request details"));
+                        "Invalid emergency request details",
+                        drogon::k400BadRequest,
+                        "INVALID_REQUEST_DETAILS"));
                     return;
                 }
 
+                // 5. Insert only if the incident is ACTIVE.
                 RequestRepository repo(
                     drogon::app().getDbClient());
 
-                repo.create(
+                repo.createForActiveIncident(
                     incidentId,
                     type,
                     description,
                     priority,
-                    static_cast<unsigned int>(quantity),
+                    quantity,
 
                     [callback](const drogon::orm::Result& result)
                     {
+                        // INSERT ... SELECT affects zero rows when the
+                        // incident does not exist or is not ACTIVE.
+                        if (result.affectedRows() == 0)
+                        {
+                            callback(ApiResponse::error(
+                                "Emergency requests can only be created "
+                                "for ACTIVE incidents",
+                                drogon::k409Conflict,
+                                "INCIDENT_NOT_ACTIVE"));
+                            return;
+                        }
+
                         Json::Value data;
 
                         data["request_id"] =
@@ -1064,46 +1138,52 @@ void ApiRoutes::registerAllocationRoutes()
                 }
 
                 if (!json->isMember("incident_id") ||
-                    !(*json)["incident_id"].isIntegral() ||
-                    !json->isMember("resource_id") ||
-                    !(*json)["resource_id"].isIntegral() ||
-                    !json->isMember("allocated_units") ||
-                    !(*json)["allocated_units"].isIntegral())
-                {
-                    callback(ApiResponse::error(
-                        "Incident, resource and allocated units are required"));
-                    return;
-                }
+    !(*json)["incident_id"].isUInt64() ||
+    !json->isMember("resource_id") ||
+    !(*json)["resource_id"].isUInt64() ||
+    !json->isMember("allocated_units") ||
+    !(*json)["allocated_units"].isUInt())
+{
+    callback(ApiResponse::error(
+        "Incident ID, resource ID and allocated units "
+        "must be valid unsigned integers",
+        drogon::k400BadRequest,
+        "INVALID_ALLOCATION_FIELDS"));
+    return;
+}
 
-                auto incidentId =
-                    (*json)["incident_id"].asUInt64();
+const unsigned long long incidentId =
+    (*json)["incident_id"].asUInt64();
 
-                auto resourceId =
-                    (*json)["resource_id"].asUInt64();
+const unsigned long long resourceId =
+    (*json)["resource_id"].asUInt64();
 
-                int units =
-                    (*json)["allocated_units"].asInt();
+const unsigned int units =
+    (*json)["allocated_units"].asUInt();
 
-                if (incidentId == 0 ||
-                    resourceId == 0 ||
-                    units <= 0)
-                {
-                    callback(ApiResponse::error(
-                        "Invalid allocation details"));
-                    return;
-                }
+if (incidentId == 0 || resourceId == 0 || units == 0)
+{
+    callback(ApiResponse::error(
+        "Incident ID, resource ID and allocated units "
+        "must be greater than zero",
+        drogon::k400BadRequest,
+        "INVALID_ALLOCATION_DETAILS"));
+    return;
+}
 
                 std::optional<unsigned long long> requestId;
 
                 if (json->isMember("request_id") &&
                     !(*json)["request_id"].isNull())
                 {
-                    if (!(*json)["request_id"].isIntegral())
-                    {
-                        callback(ApiResponse::error(
-                            "Invalid request ID"));
-                        return;
-                    }
+                    if (!(*json)["request_id"].isUInt64())
+{
+    callback(ApiResponse::error(
+        "Invalid request ID",
+        drogon::k400BadRequest,
+        "INVALID_REQUEST_ID"));
+    return;
+}
 
                     auto value =
                         (*json)["request_id"].asUInt64();
@@ -1124,7 +1204,7 @@ void ApiRoutes::registerAllocationRoutes()
                 service.allocate(
                     incidentId,
                     resourceId,
-                    static_cast<unsigned int>(units),
+                    units,
                     requestId,
 
                     [callback](bool success,
@@ -1267,6 +1347,18 @@ void ApiRoutes::registerIncidentEventRoutes()
                 {
                     callback(ApiResponse::error(
                         "Invalid JSON body"));
+                    return;
+                }
+
+                if (!json->isMember("event_type") ||
+                    !(*json)["event_type"].isString() ||
+                    !json->isMember("description") ||
+                    !(*json)["description"].isString())
+                {
+                    callback(ApiResponse::error(
+                        "Event type and description must be valid strings",
+                        drogon::k400BadRequest,
+                        "INVALID_EVENT_FIELDS"));
                     return;
                 }
 

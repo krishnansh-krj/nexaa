@@ -31,18 +31,24 @@ protected:
     std::shared_ptr<drogon::orm::DbClient> dbClient;
 
     template <typename... Args>
-    void execute(
-        const std::string& sql,
-        ResultCallback onSuccess,
-        ErrorCallback onError,
-        Args&&... args) const
+void execute(
+    const std::string& sql,
+    ResultCallback onSuccess,
+    ErrorCallback onError,
+    Args&&... args) const
+{
+    if (!dbClient)
     {
-        dbClient->execSqlAsync(
-            sql,
-            std::move(onSuccess),
-            std::move(onError),
-            std::forward<Args>(args)...
-        );
+        throw std::runtime_error(
+            "Database client is unavailable");
     }
+
+    dbClient->execSqlAsync(
+        sql,
+        std::move(onSuccess),
+        std::move(onError),
+        std::forward<Args>(args)...
+    );
+}
 };
 }

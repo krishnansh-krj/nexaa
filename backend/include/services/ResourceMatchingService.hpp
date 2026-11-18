@@ -26,12 +26,6 @@ public:
         std::function<void(const std::string&)>;
 
 
-    // Normalize resource/request types:
-    // - Remove leading and trailing spaces
-    // - Convert to uppercase
-    static std::string normalizeType(std::string value);
-
-
     // Find available resources matching an emergency request.
     static void findMatches(
         const std::shared_ptr<drogon::orm::DbClient>& db,

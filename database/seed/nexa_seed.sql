@@ -67,6 +67,61 @@ VALUES
 (1, 3, 2, 1, 'ASSIGNED'),
 (2, 4, 3, 2, 'ASSIGNED');
 
+-- ============================================================
+-- SYNCHRONIZE RESOURCE INVENTORY WITH SEEDED ACTIVE ALLOCATIONS
+-- ============================================================
+
+UPDATE resources r
+LEFT JOIN
+(
+    SELECT
+        resource_id,
+        SUM(allocated_units) AS active_units
+    FROM resource_allocations
+    WHERE status IN ('ASSIGNED', 'DISPATCHED', 'ON_SITE')
+    GROUP BY resource_id
+) a
+    ON a.resource_id = r.resource_id
+SET
+    r.available_units = GREATEST(
+        r.total_units - COALESCE(a.active_units, 0),
+        0
+    ),
+    r.status = CASE
+        WHEN r.status IN ('MAINTENANCE', 'UNAVAILABLE')
+            THEN r.status
+        WHEN COALESCE(a.active_units, 0) >= r.total_units
+            THEN 'DEPLOYED'
+        ELSE 'AVAILABLE'
+    END;
+
+
+-- ============================================================
+-- SYNCHRONIZE REQUEST STATUS WITH SEEDED ACTIVE ALLOCATIONS
+-- ============================================================
+
+UPDATE emergency_requests er
+LEFT JOIN
+(
+    SELECT
+        request_id,
+        SUM(allocated_units) AS active_units
+    FROM resource_allocations
+    WHERE request_id IS NOT NULL
+      AND status IN ('ASSIGNED', 'DISPATCHED', 'ON_SITE')
+    GROUP BY request_id
+) a
+    ON a.request_id = er.request_id
+SET
+    er.status = CASE
+        WHEN COALESCE(a.active_units, 0) >= er.quantity_required
+            THEN 'FULFILLED'
+        WHEN COALESCE(a.active_units, 0) > 0
+            THEN 'PROCESSING'
+        ELSE 'PENDING'
+    END
+WHERE er.status <> 'CANCELLED';
+
 -- 5. INCIDENT EVENTS
 INSERT INTO incident_events
 (incident_id, event_type, description)

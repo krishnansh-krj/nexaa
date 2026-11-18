@@ -33,7 +33,16 @@ public:
         ResultCallback onSuccess,
         ErrorCallback onError) const;
 
-    void findPrioritizable(
+        void createForActiveIncident(
+        unsigned long long incidentId,
+        const std::string& requestType,
+        const std::string& description,
+        const std::string& priority,
+        unsigned int quantity,
+        ResultCallback onSuccess,
+        ErrorCallback onError) const;
+    
+        void findPrioritizable(
         ResultCallback onSuccess,
         ErrorCallback onError) const;
 

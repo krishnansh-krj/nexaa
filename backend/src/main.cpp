@@ -23,8 +23,6 @@
 #include "repositories/IncidentEventRepository.hpp"
 #include "repositories/NetworkRepository.hpp"
 
-#include "controllers/ApiRoutes.hpp"
-
 #include "services/IncidentService.hpp"
 #include "services/ResourceService.hpp"
 #include "services/RequestService.hpp"
@@ -43,25 +41,11 @@
 
 int main()
 {
-    const char* password = std::getenv("NEXA_DB_PASSWORD");
-
-    if (password == nullptr || std::string(password).empty())
-    {
-        std::cerr << "ERROR: NEXA_DB_PASSWORD environment variable is not set.\n";
-        return 1;
-    }
-
     // Register the MySQL database connection.
-    drogon::app().createDbClient(
-        "mysql",
-        "127.0.0.1",
-        3306,
-        "nexa_db",
-        "nexa_app",
-        password,
-        2
-    );
-
+if (!nexa::DatabaseConfig::registerMySql())
+{
+    return 1;
+}
     // Register all NEXA API routes
     nexa::ApiRoutes::registerRoutes();
 

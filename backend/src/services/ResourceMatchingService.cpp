@@ -1,44 +1,8 @@
 #include "services/ResourceMatchingService.hpp"
-
-#include <algorithm>
-#include <cctype>
+#include "utilities/TypeMapping.hpp"
 
 namespace nexa
 {
-
-    std::string ResourceMatchingService::normalizeType(std::string value)
-{
-        auto notSpace = [](unsigned char ch)
-        {
-            return !std::isspace(ch);
-        };
-
-        value.erase(
-            value.begin(),
-            std::find_if(value.begin(), value.end(), notSpace)
-        );
-
-        value.erase(
-            std::find_if(
-                value.rbegin(),
-                value.rend(),
-                notSpace
-            ).base(),
-            value.end()
-        );
-
-        std::transform(
-            value.begin(),
-            value.end(),
-            value.begin(),
-            [](unsigned char ch)
-            {
-                return static_cast<char>(std::toupper(ch));
-            }
-        );
-
-        return value;
-    }
 
     void ResourceMatchingService::findMatches(
         const std::shared_ptr<drogon::orm::DbClient>& db,
@@ -73,8 +37,11 @@ namespace nexa
             "i.severity AS incident_severity, "
             "i.status AS incident_status, "
             "COALESCE(a.allocated_units, 0) AS allocated_units, "
-            "(er.quantity_required - "
-            "COALESCE(a.allocated_units, 0)) AS outstanding_units "
+            "CASE "
+            "WHEN COALESCE(a.allocated_units, 0) >= er.quantity_required "
+            "THEN 0 "
+            "ELSE er.quantity_required - COALESCE(a.allocated_units, 0) "
+            "END AS outstanding_units "
             "FROM emergency_requests er "
             "INNER JOIN incidents i "
             "ON i.incident_id = er.incident_id "
@@ -103,9 +70,9 @@ namespace nexa
                     request["incident_id"].as<unsigned long long>();
 
                 const std::string requestType =
-                    normalizeType(
-                        request["request_type"].as<std::string>()
-                    );
+                        nexa::normalizeType(
+                    request["request_type"].as<std::string>()
+                     );
 
                 const std::string requestStatus =
                     request["request_status"].as<std::string>();
@@ -199,7 +166,7 @@ namespace nexa
                                         .as<std::string>()
                                 );
 
-                            if (resourceType != requestType)
+                            if (!isCompatibleResource(requestType, resourceType))
                             {
                                 continue;
                             }
@@ -215,9 +182,9 @@ namespace nexa
 
                             Json::Value item;
 
-                            item["resource_id"] =
+                            item["resource_id"] = Json::UInt64(
                                 resource["resource_id"]
-                                    .as<unsigned long long>();
+                                    .as<unsigned long long>());
 
                             item["resource_code"] =
                                 resource["resource_code"]
@@ -279,9 +246,9 @@ namespace nexa
                         // Step 7: Prepare response.
                         Json::Value data;
 
-                        data["request_id"] = requestId;
+                        data["request_id"] = Json::UInt64(requestId);
 
-                        data["incident_id"] = incidentId;
+                        data["incident_id"] = Json::UInt64(incidentId);
 
                         data["request_type"] = requestType;
 
@@ -297,7 +264,7 @@ namespace nexa
                             outstandingUnits;
 
                         data["total_matching_units"] =
-                            totalMatchingUnits;
+                            Json::UInt64(totalMatchingUnits);
 
                         data["matching_resource_count"] =
                             static_cast<unsigned int>(
@@ -346,3 +313,4 @@ namespace nexa
     }
 
 } // namespace nexa
+    

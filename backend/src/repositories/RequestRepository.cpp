@@ -51,7 +51,7 @@ namespace nexa
         unsigned int quantity,
         ResultCallback onSuccess,
         ErrorCallback onError) const
-{
+    {
         execute(
             "INSERT INTO emergency_requests "
             "(incident_id, request_type, description, priority, "
@@ -63,6 +63,33 @@ namespace nexa
             description,
             priority,
             quantity
+        );
+    }
+
+        void RequestRepository::createForActiveIncident(
+        unsigned long long incidentId,
+        const std::string& requestType,
+        const std::string& description,
+        const std::string& priority,
+        unsigned int quantity,
+        ResultCallback onSuccess,
+        ErrorCallback onError) const
+    {
+        execute(
+            "INSERT INTO emergency_requests "
+            "(incident_id, request_type, description, priority, "
+            "quantity_required) "
+            "SELECT ?, ?, ?, ?, ? "
+            "FROM incidents "
+            "WHERE incident_id = ? AND status = 'ACTIVE'",
+            std::move(onSuccess),
+            std::move(onError),
+            incidentId,
+            requestType,
+            description,
+            priority,
+            quantity,
+            incidentId
         );
     }
 
