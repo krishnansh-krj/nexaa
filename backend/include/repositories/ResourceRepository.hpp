@@ -3,6 +3,9 @@
 
 #include "BaseRepository.hpp"
 
+#include <optional>
+#include <string>
+
 namespace nexa
 {
 class ResourceRepository : public BaseRepository
@@ -29,6 +32,18 @@ public:
         const std::string& name,
         const std::string& type,
         unsigned int totalUnits,
+        ResultCallback onSuccess,
+        ErrorCallback onError) const;
+
+    // Same as create(), with an optional map location and address.
+    void create(
+        const std::string& code,
+        const std::string& name,
+        const std::string& type,
+        unsigned int totalUnits,
+        const std::optional<double>& latitude,
+        const std::optional<double>& longitude,
+        const std::string& address,
         ResultCallback onSuccess,
         ErrorCallback onError) const;
 };

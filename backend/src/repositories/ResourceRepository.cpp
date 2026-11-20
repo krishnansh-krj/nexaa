@@ -67,4 +67,52 @@ namespace nexa
         );
     }
 
+    void ResourceRepository::create(
+        const std::string& code,
+        const std::string& name,
+        const std::string& type,
+        unsigned int totalUnits,
+        const std::optional<double>& latitude,
+        const std::optional<double>& longitude,
+        const std::string& address,
+        ResultCallback onSuccess,
+        ErrorCallback onError) const
+{
+        if (latitude && longitude)
+        {
+            execute(
+                "INSERT INTO resources "
+                "(resource_code, resource_name, resource_type, "
+                "total_units, available_units, latitude, longitude, address) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''))",
+                std::move(onSuccess),
+                std::move(onError),
+                code,
+                name,
+                type,
+                totalUnits,
+                totalUnits,
+                *latitude,
+                *longitude,
+                address
+            );
+            return;
+        }
+
+        execute(
+            "INSERT INTO resources "
+            "(resource_code, resource_name, resource_type, "
+            "total_units, available_units, address) "
+            "VALUES (?, ?, ?, ?, ?, NULLIF(?, ''))",
+            std::move(onSuccess),
+            std::move(onError),
+            code,
+            name,
+            type,
+            totalUnits,
+            totalUnits,
+            address
+        );
+    }
+
 } // namespace nexa

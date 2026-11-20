@@ -34,6 +34,7 @@ CREATE TABLE resources (
     address VARCHAR(255),
     last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_resource_units CHECK (available_units <= total_units),
     INDEX idx_resource_type_status (resource_type, status),
     INDEX idx_resource_location (latitude, longitude)
 ) ENGINE=InnoDB;

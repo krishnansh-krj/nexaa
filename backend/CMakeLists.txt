@@ -37,6 +37,10 @@ if(NEXA_BUILD_SERVER)
         src/repositories/NetworkRepository.cpp
         src/repositories/RequestRepository.cpp
         src/repositories/ResourceRepository.cpp
+        src/controllers/DsaRoutes.cpp
+        src/services/DsaIntelligenceService.cpp
+        src/services/IncidentCommandService.cpp
+        src/intelligence/IntelligenceEngine.cpp
     )
 
     target_include_directories(nexa_backend PRIVATE "${NEXA_INCLUDE_DIR}")
@@ -83,4 +87,33 @@ add_test(
     NAME nexa_type_mapping_test
     COMMAND nexa_type_mapping_test
 )
+
+    # Synopsis data-structure suite (header-only include/dsa, no Drogon needed)
+    add_executable(nexa_dsa_suite_test
+        tests/dsa_suite_test.cpp
+    )
+    target_include_directories(nexa_dsa_suite_test PRIVATE "${NEXA_INCLUDE_DIR}")
+    target_compile_features(nexa_dsa_suite_test PRIVATE cxx_std_20)
+    add_test(NAME nexa_dsa_suite_test COMMAND nexa_dsa_suite_test)
+
+    # Incident status lifecycle rules
+    add_executable(nexa_incident_lifecycle_test
+        tests/incident_lifecycle_test.cpp
+    )
+    target_include_directories(nexa_incident_lifecycle_test PRIVATE "${NEXA_INCLUDE_DIR}")
+    target_compile_features(nexa_incident_lifecycle_test PRIVATE cxx_std_20)
+    add_test(NAME nexa_incident_lifecycle_test COMMAND nexa_incident_lifecycle_test)
+
+    # Intelligence engine integration test (needs jsoncpp, shipped with Drogon)
+    if(NEXA_BUILD_SERVER)
+        add_executable(nexa_intelligence_engine_test
+            tests/intelligence_engine_test.cpp
+            src/intelligence/IntelligenceEngine.cpp
+            src/algorithms/RequestPrioritizer.cpp
+        )
+        target_include_directories(nexa_intelligence_engine_test PRIVATE "${NEXA_INCLUDE_DIR}")
+        target_link_libraries(nexa_intelligence_engine_test PRIVATE Drogon::Drogon)
+        target_compile_features(nexa_intelligence_engine_test PRIVATE cxx_std_20)
+        add_test(NAME nexa_intelligence_engine_test COMMAND nexa_intelligence_engine_test)
+    endif()
 endif()

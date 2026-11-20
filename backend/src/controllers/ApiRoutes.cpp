@@ -1,9 +1,62 @@
 #include "controllers/ApiRoutes.hpp"
+#include "controllers/DsaRoutes.hpp"
+#include "services/IncidentCommandService.hpp"
+
+#include <exception>
+#include <optional>
 #include "utilities/TypeMapping.hpp"
 
 
 namespace nexa
 {
+
+namespace
+{
+// Copies `column` into item[key] when the row has that column; NULL -> null.
+// Rows from custom SELECTs that lack the column are left untouched.
+void copyOptionalText(const drogon::orm::Row& row, const char* column,
+                      Json::Value& item, const char* key)
+{
+    try
+    {
+        item[key] = row[column].isNull()
+            ? Json::Value(Json::nullValue)
+            : Json::Value(row[column].as<std::string>());
+    }
+    catch (const std::exception&)
+    {
+    }
+}
+
+void copyOptionalDouble(const drogon::orm::Row& row, const char* column,
+                        Json::Value& item, const char* key)
+{
+    try
+    {
+        item[key] = row[column].isNull()
+            ? Json::Value(Json::nullValue)
+            : Json::Value(row[column].as<double>());
+    }
+    catch (const std::exception&)
+    {
+    }
+}
+
+bool optionalNumber(const Json::Value& body, const char* key,
+                    std::optional<double>& out, bool& invalid)
+{
+    if (!body.isMember(key) || body[key].isNull())
+        return false;
+    if (!body[key].isNumeric())
+    {
+        invalid = true;
+        return false;
+    }
+    out = body[key].asDouble();
+    return true;
+}
+} // namespace
+
 
 drogon::HttpResponsePtr ApiRoutes::databaseError(
         const drogon::orm::DrogonDbException& error)
@@ -77,6 +130,12 @@ Json::Value ApiRoutes::serializeIncident(
         item["status"] =
             row["status"].as<std::string>();
 
+        copyOptionalDouble(row, "latitude", item, "latitude");
+        copyOptionalDouble(row, "longitude", item, "longitude");
+        copyOptionalText(row, "address", item, "address");
+        copyOptionalText(row, "reported_at", item, "reported_at");
+        copyOptionalText(row, "resolved_at", item, "resolved_at");
+
         return item;
     }
 
@@ -149,6 +208,8 @@ Json::Value ApiRoutes::serializeRequest(
         item["status"] =
             row["status"].as<std::string>();
 
+        copyOptionalText(row, "requested_at", item, "requested_at");
+
         return item;
     }
 
@@ -177,6 +238,9 @@ Json::Value ApiRoutes::serializeAllocation(
             ? Json::Value(Json::nullValue)
             : Json::Value(Json::UInt64(
                 row["request_id"].as<unsigned long long>()));
+
+        copyOptionalText(row, "assigned_at", item, "assigned_at");
+        copyOptionalText(row, "released_at", item, "released_at");
 
         return item;
     }
@@ -345,6 +409,185 @@ void ApiRoutes::registerIncidentRoutes()
                 );
             },
             {drogon::Get}
+        );
+
+        // Shared completion -> HTTP response for incident commands.
+        auto respondCommand = [](HttpCallback callback)
+        {
+            return [callback](bool ok, drogon::HttpStatusCode status,
+                              const std::string& code, const std::string& message,
+                              const Json::Value& data)
+            {
+                if (ok)
+                    callback(ApiResponse::success(data, message, status));
+                else
+                    callback(ApiResponse::error(message, status, code));
+            };
+        };
+
+        // POST /api/incidents
+        // { "title", "incident_type", "severity", ["description"], ["status"],
+        //   ["incident_code"], ["latitude", "longitude"], ["address"] }
+
+        drogon::app().registerHandler(
+            "/api/incidents",
+
+            [respondCommand](const drogon::HttpRequestPtr& request,
+                             HttpCallback&& callback)
+            {
+                auto json = request->getJsonObject();
+
+                if (!json || !json->isObject())
+                {
+                    callback(ApiResponse::error(
+                        "Invalid JSON body",
+                        drogon::k400BadRequest,
+                        "INVALID_JSON"));
+                    return;
+                }
+
+                const Json::Value& body = *json;
+
+                auto stringField = [&body](const char* key) -> std::string
+                {
+                    return body.isMember(key) && body[key].isString()
+                        ? Validation::trim(body[key].asString())
+                        : std::string();
+                };
+
+                NewIncident incident;
+                incident.title = stringField("title");
+                incident.type = normalizeType(stringField("incident_type"));
+                incident.severity = normalizeType(stringField("severity"));
+                incident.description = stringField("description");
+                incident.code = normalizeType(stringField("incident_code"));
+                incident.address = stringField("address");
+                incident.status = normalizeType(stringField("status"));
+                if (incident.status.empty())
+                    incident.status = "REPORTED";
+
+                if (incident.title.empty() || incident.title.size() > 150)
+                {
+                    callback(ApiResponse::error(
+                        "title is required (max 150 characters)",
+                        drogon::k400BadRequest, "INVALID_TITLE"));
+                    return;
+                }
+
+                if (incident.type.empty() || incident.type.size() > 50)
+                {
+                    callback(ApiResponse::error(
+                        "incident_type is required (max 50 characters)",
+                        drogon::k400BadRequest, "INVALID_INCIDENT_TYPE"));
+                    return;
+                }
+
+                if (!Validation::isValidEnum(incident.severity,
+                        {"LOW", "MEDIUM", "HIGH", "CRITICAL"}))
+                {
+                    callback(ApiResponse::error(
+                        "severity must be LOW, MEDIUM, HIGH or CRITICAL",
+                        drogon::k400BadRequest, "INVALID_SEVERITY"));
+                    return;
+                }
+
+                if (!Validation::isValidEnum(incident.status,
+                        {"REPORTED", "VERIFIED", "ACTIVE"}))
+                {
+                    callback(ApiResponse::error(
+                        "A new incident must be REPORTED, VERIFIED or ACTIVE",
+                        drogon::k400BadRequest, "INVALID_STATUS"));
+                    return;
+                }
+
+                if (incident.code.size() > 30 || incident.address.size() > 255)
+                {
+                    callback(ApiResponse::error(
+                        "incident_code (max 30) or address (max 255) is too long",
+                        drogon::k400BadRequest, "FIELD_TOO_LONG"));
+                    return;
+                }
+
+                bool invalid = false;
+                const bool hasLat = optionalNumber(body, "latitude", incident.latitude, invalid);
+                const bool hasLng = optionalNumber(body, "longitude", incident.longitude, invalid);
+
+                if (invalid || hasLat != hasLng ||
+                    (hasLat && (!Validation::isValidLatitude(*incident.latitude) ||
+                                !Validation::isValidLongitude(*incident.longitude))))
+                {
+                    callback(ApiResponse::error(
+                        "latitude and longitude must be supplied together and be in range",
+                        drogon::k400BadRequest, "INVALID_COORDINATES"));
+                    return;
+                }
+
+                IncidentCommandService::create(
+                    drogon::app().getDbClient(),
+                    incident,
+                    respondCommand(callback));
+            },
+            {drogon::Post}
+        );
+
+        // PATCH /api/incidents/{id}/status   { "status": "ACTIVE", ["note"] }
+
+        drogon::app().registerHandler(
+            "/api/incidents/{1}/status",
+
+            [respondCommand](const drogon::HttpRequestPtr& request,
+                             HttpCallback&& callback,
+                             long long id)
+            {
+                if (id <= 0)
+                {
+                    callback(ApiResponse::error(
+                        "Invalid incident ID",
+                        drogon::k400BadRequest,
+                        "INVALID_ID"));
+                    return;
+                }
+
+                auto json = request->getJsonObject();
+
+                if (!json || !json->isMember("status") ||
+                    !(*json)["status"].isString())
+                {
+                    callback(ApiResponse::error(
+                        "Body must contain a string status",
+                        drogon::k400BadRequest,
+                        "INVALID_JSON"));
+                    return;
+                }
+
+                const std::string status =
+                    normalizeType((*json)["status"].asString());
+
+                if (!Validation::isValidEnum(status,
+                        {"REPORTED", "VERIFIED", "ACTIVE", "RESOLVED", "CLOSED"}))
+                {
+                    callback(ApiResponse::error(
+                        "Invalid incident status",
+                        drogon::k400BadRequest,
+                        "INVALID_STATUS"));
+                    return;
+                }
+
+                std::string note;
+                if (json->isMember("note") && (*json)["note"].isString())
+                    note = Validation::trim((*json)["note"].asString());
+
+                if (note.size() > 500)
+                    note.resize(500);
+
+                IncidentCommandService::updateStatus(
+                    drogon::app().getDbClient(),
+                    static_cast<unsigned long long>(id),
+                    status,
+                    note,
+                    respondCommand(callback));
+            },
+            {drogon::Patch}
         );
     }
 
@@ -589,6 +832,33 @@ void ApiRoutes::registerResourceRoutes()
                     return;
                 }
 
+                std::optional<double> latitude, longitude;
+                bool invalidLocation = false;
+                const bool hasLat = optionalNumber(*json, "latitude", latitude, invalidLocation);
+                const bool hasLng = optionalNumber(*json, "longitude", longitude, invalidLocation);
+
+                if (invalidLocation || hasLat != hasLng ||
+                    (hasLat && (!Validation::isValidLatitude(*latitude) ||
+                                !Validation::isValidLongitude(*longitude))))
+                {
+                    callback(ApiResponse::error(
+                        "latitude and longitude must be supplied together and be in range",
+                        drogon::k400BadRequest, "INVALID_COORDINATES"));
+                    return;
+                }
+
+                std::string address;
+                if (json->isMember("address") && (*json)["address"].isString())
+                    address = Validation::trim((*json)["address"].asString());
+
+                if (address.size() > 255)
+                {
+                    callback(ApiResponse::error(
+                        "Address is too long",
+                        drogon::k400BadRequest, "FIELD_TOO_LONG"));
+                    return;
+                }
+
                 ResourceRepository repo(
                     drogon::app().getDbClient());
 
@@ -597,6 +867,9 @@ void ApiRoutes::registerResourceRoutes()
                     name,
                     type,
                     totalUnits,
+                    latitude,
+                    longitude,
+                    address,
 
                     [callback](const drogon::orm::Result& result)
                     {
@@ -722,10 +995,15 @@ void ApiRoutes::registerRequestRoutes()
 
                     [callback](const std::string& message)
                     {
+                        const bool notFound =
+                            message == "Emergency request not found";
+
                         callback(ApiResponse::error(
-                        message,
-                        drogon::k400BadRequest,
-                        "RESOURCE_MATCHING_FAILED"));
+                            message,
+                            notFound ? drogon::k404NotFound
+                                     : drogon::k400BadRequest,
+                            notFound ? "REQUEST_NOT_FOUND"
+                                     : "RESOURCE_MATCHING_FAILED"));
                     }
                 );
             },
@@ -1809,6 +2087,7 @@ void ApiRoutes::registerRoutes()
         registerAllocationRoutes();
         registerIncidentEventRoutes();
         registerNetworkRoutes();
+        DsaRoutes::registerRoutes();
 
         LOG_INFO << "All NEXA API routes registered successfully.";
     }

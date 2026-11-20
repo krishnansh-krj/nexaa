@@ -49,6 +49,38 @@ if (!nexa::DatabaseConfig::registerMySql())
     // Register all NEXA API routes
     nexa::ApiRoutes::registerRoutes();
 
+    // CORS for the React frontend. Origin comes from NEXA_CORS_ORIGIN
+    // (default: Vite dev server). Preflight OPTIONS requests are answered
+    // before routing; every other response gets the allow-origin header.
+    static const std::string corsOrigin = []
+    {
+        const char* fromEnv = std::getenv("NEXA_CORS_ORIGIN");
+        return std::string(fromEnv && *fromEnv ? fromEnv : "http://localhost:5173");
+    }();
+
+    drogon::app().registerSyncAdvice(
+        [](const drogon::HttpRequestPtr& request) -> drogon::HttpResponsePtr
+        {
+            if (request->method() != drogon::Options)
+                return nullptr;
+
+            auto preflight = drogon::HttpResponse::newHttpResponse();
+            preflight->setStatusCode(drogon::k204NoContent);
+            preflight->addHeader("Access-Control-Allow-Origin", corsOrigin);
+            preflight->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+            preflight->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            preflight->addHeader("Access-Control-Max-Age", "86400");
+            return preflight;
+        });
+
+    drogon::app().registerPostHandlingAdvice(
+        [](const drogon::HttpRequestPtr&, const drogon::HttpResponsePtr& response)
+        {
+            if (response->getHeader("Access-Control-Allow-Origin").empty())
+                response->addHeader("Access-Control-Allow-Origin", corsOrigin);
+            response->addHeader("Vary", "Origin");
+        });
+
     // API 1: Backend health check
     drogon::app().registerHandler(
         "/api/health",
@@ -119,7 +151,7 @@ if (!nexa::DatabaseConfig::registerMySql())
     // Start server
     drogon::app().addListener("127.0.0.1", 8080);
 
-    LOG_INFO << "NEXA Backend starting on port 8080";
+    LOG_INFO << "NEXA Backend starting on port 8080 (CORS origin: " << corsOrigin << ")";
 
     drogon::app().run();
 
