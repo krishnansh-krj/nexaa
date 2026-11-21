@@ -9,7 +9,7 @@
 -- Safe to re-run: it recomputes available_units only where it
 -- disagrees with active allocations and leaves MAINTENANCE /
 -- UNAVAILABLE statuses untouched.
--- ============================================================
+-- ===========================================================
 
 USE nexa_db;
 

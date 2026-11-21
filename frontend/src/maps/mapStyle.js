@@ -1,24 +1,47 @@
-// Dark basemap: OpenStreetMap data rendered by CARTO "Dark Matter" raster tiles.
+// Dark basemap: OpenStreetMap data, rendered by MapLibre GL JS.
 // Map rendering only — every route, distance and spatial query comes from the
 // C++ engine (spec §2.4: rendering and route computation stay separate).
+//
+// CARTO's basemap tiles now require an API key ("API KEY REQUIRED" tiles), so
+// the default is OpenFreeMap: free OSM vector tiles, no key, no sign-up.
+// Change BASEMAP below to switch source:
+//   'openfreemap' → OpenFreeMap "dark" vector style (default, sharpest)
+//   'osm'         → standard OpenStreetMap raster tiles, darkened in MapLibre
 export const DELHI = { lon: 77.2167, lat: 28.6139 };
 
-export const darkStyle = {
+const BASEMAP = 'openfreemap';
+
+const OSM_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+
+// Fallback: official OSM raster tiles. MapLibre has no "invert" filter, but
+// setting brightness-min above brightness-max inverts the light map into a dark one.
+const osmDarkStyle = {
   version: 8,
   sources: {
     basemap: {
       type: 'raster',
-      tiles: ['a', 'b', 'c', 'd'].map((s) => `https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png`),
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
       tileSize: 256,
-      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+      attribution: OSM_ATTRIBUTION,
       maxzoom: 19,
     },
   },
   layers: [
     { id: 'bg', type: 'background', paint: { 'background-color': '#05080d' } },
-    { id: 'basemap', type: 'raster', source: 'basemap', paint: { 'raster-opacity': 0.92, 'raster-saturation': -0.2, 'raster-contrast': 0.08 } },
+    {
+      id: 'basemap', type: 'raster', source: 'basemap',
+      paint: {
+        'raster-brightness-min': 0.92,
+        'raster-brightness-max': 0.04,
+        'raster-saturation': -0.85,
+        'raster-contrast': 0.1,
+        'raster-opacity': 0.95,
+      },
+    },
   ],
 };
+
+export const darkStyle = BASEMAP === 'osm' ? osmDarkStyle : 'https://tiles.openfreemap.org/styles/dark';
 
 /** Polygon approximating a circle of `km` radius (for radius queries). */
 export function circlePolygon(lat, lon, km, steps = 64) {
