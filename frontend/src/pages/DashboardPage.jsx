@@ -10,19 +10,45 @@ import Panel from '../components/Panel';
 import StatTile from '../components/StatTile';
 import { Async } from '../components/Feedback';
 import { SeverityBadge, StatusBadge } from '../components/Badges';
-import NexaMap from '../maps/NexaMap';
+import NexaMap, { isClosedIncident } from '../maps/NexaMap';
 import MapLegend from '../maps/MapLegend';
 import { CategoryDonut, Gauge, SeverityChart, UtilisationBars } from '../charts/Charts';
-import { clock, num, timeAgo } from '../services/format';
+import { clock, km, mins, num, timeAgo } from '../services/format';
 import { stagger } from '../components/motion';
 
 export default function DashboardPage() {
   const nav = useNavigate();
   const dash = useApi(() => api.dashboard(), []);
-  const layers = useApi(() => api.layers(false), []);
-  useLiveFeed(() => { dash.reload({ silent: true }); layers.reload({ silent: true }); }, ['incident.', 'deployment.', 'request.', 'resource.', 'hospital.'], 900);
+  const layers = useApi(() => api.layers(true), []);           // includes resolved/archived incidents
+  const deps = useApi(() => api.deployments('ACTIVE'), []);
+  const reqs = useApi(() => api.requests(), []);
+  useLiveFeed(() => { dash.reload({ silent: true }); layers.reload({ silent: true }); deps.reload({ silent: true }); reqs.reload({ silent: true }); },
+    ['incident.', 'deployment.', 'request.', 'resource.', 'hospital.'], 900);
 
   const highlight = useMemo(() => ({ incidents: new Set((dash.data?.topPriority || []).slice(0, 3).map((r) => r.incidentId)) }), [dash.data]);
+
+  // open emergency requests per incident (FIFO + priority queues) → badge on the incident marker
+  const requestCounts = useMemo(() => {
+    const m = new Map();
+    (reqs.data || []).forEach((r) => { if (r.status === 'QUEUED' || r.status === 'ESCALATED') m.set(r.incidentId, (m.get(r.incidentId) || 0) + 1); });
+    return m;
+  }, [reqs.data]);
+
+  // allocation links: incident ↔ every unit deployed to it, labelled with the engine's road distance + ETA
+  const allocationLinks = useMemo(() => {
+    if (!layers.data || !deps.data) return [];
+    const inc = new Map(layers.data.incidents.map((i) => [i.id, i]));
+    const res = new Map(layers.data.resources.map((r) => [r.id, r]));
+    return deps.data.flatMap((d) => d.resources.filter((r) => !r.released).map((r) => {
+      const a = res.get(r.resourceId), b = inc.get(d.incidentId);
+      return a && b ? { a, b, color: '#3ddc97', width: 2, label: `${km(r.routeKm)} · ${mins(r.etaMinutes)}` } : null;
+    }).filter(Boolean));
+  }, [layers.data, deps.data]);
+  const tags = useMemo(() => {
+    const t = {};
+    (dash.data?.topPriority || []).slice(0, 3).forEach((r) => { t[r.incidentId] = { text: `P${r.rank} · ${r.priority.toFixed(0)}`, color: r.rank === 1 ? '#ff3d57' : '#ffb627' }; });
+    return { incidents: t };
+  }, [dash.data]);
 
   return (
     <>
@@ -48,9 +74,16 @@ export default function DashboardPage() {
               <Panel title="Operational map" icon={Activity} hint={`${num(d.incidents.affectedPeopleOpen)} people affected (open incidents)`} bodyClass="flush">
                 <Async state={layers} label="Plotting assets">
                   {(l) => (
-                    <NexaMap incidents={l.incidents} resources={l.resources} hospitals={l.hospitals} className="short"
-                      highlight={highlight} onSelect={(kind, item) => kind === 'incident' && nav(`/incidents/${item.id}`)}>
-                      <MapLegend />
+                    <NexaMap incidents={l.incidents} resources={l.resources} hospitals={l.hospitals} className="mid"
+                      highlight={highlight} requestCounts={requestCounts} links={allocationLinks} tags={tags} layerControl
+                      onSelect={(kind, item) => kind === 'incident' && nav(`/incidents/${item.id}`)}>
+                      <div className="map-overlay dispatch-hud">
+                        <span className="hud-chip" style={{ color: '#ff3d57' }}>{l.incidents.filter((i) => !isClosedIncident(i)).length} active</span>
+                        <span className="hud-chip">{l.incidents.filter(isClosedIncident).length} closed</span>
+                        <span className="hud-chip" style={{ color: '#2de2e6' }}>{[...requestCounts.values()].reduce((a, b) => a + b, 0)} open requests</span>
+                        <span className="hud-chip" style={{ color: '#3ddc97' }}>{allocationLinks.length} units en route</span>
+                      </div>
+                      <MapLegend closed requests links={allocationLinks.length > 0} regionHint={false} />
                     </NexaMap>
                   )}
                 </Async>

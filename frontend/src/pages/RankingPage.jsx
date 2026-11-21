@@ -10,7 +10,7 @@ import Panel from '../components/Panel';
 import { Async } from '../components/Feedback';
 import { Field, Select, TextInput } from '../components/Form';
 import { Chips, ScoreBar } from '../components/Badges';
-import NexaMap from '../maps/NexaMap';
+import DispatchMap from '../maps/DispatchMap';
 import { CATEGORY_LABEL, km, mins, num } from '../services/format';
 
 const COMPONENTS = [['capability', 'var(--amber)'], ['proximity', 'var(--cyan)'], ['availability', 'var(--green)'], ['capacity', 'var(--violet)']];
@@ -59,12 +59,12 @@ export default function RankingPage() {
   const open = useApi(() => api.incidents({ limit: 200 }), []);
   useEffect(() => { if (!incidentId && open.data?.items?.length) setIncidentId(String(open.data.items[0].id)); }, [open.data, incidentId]);
   const rank = useApi(() => api.ranking(incidentId, opts), [incidentId, JSON.stringify(opts)], { enabled: Boolean(incidentId) });
+  const [focusId, setFocusId] = useState(null);   // candidate whose Dijkstra route is drawn (default: rank 1)
+  useEffect(() => setFocusId(null), [incidentId]);
 
   const incident = open.data?.items?.find((i) => String(i.id) === String(incidentId));
-  const resources = useMemo(() => (rank.data?.candidates || []).map((c) => ({ id: c.resourceId, code: c.code, name: c.name, lat: c.lat, lon: c.lon, status: 'AVAILABLE', category: c.category, available: c.available, capacity: c.capacity, organization: `score ${c.score.toFixed(1)}` })), [rank.data]);
-  const incidents = useMemo(() => (incident ? [incident] : []), [incident]);
-  const fitTo = useMemo(() => (incident ? [incident, ...resources.slice(0, 5)] : null), [incident, resources]);
-  const highlight = useMemo(() => ({ resources: new Set(resources.slice(0, 3).map((r) => r.id)) }), [resources]);
+  const focused = focusId ?? rank.data?.candidates?.[0]?.resourceId;
+  const top3 = useMemo(() => new Set((rank.data?.candidates || []).slice(0, 3).map((c) => c.resourceId)), [rank.data]);
 
   return (
     <>
@@ -89,7 +89,8 @@ export default function RankingPage() {
               {r.candidates.length === 0 && <div className="empty">No resource passes the hard filters for this incident.</div>}
               {r.candidates.map((c, i) => (
                 <motion.div key={c.resourceId} layout initial={{ opacity: 0, x: -12 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                  style={{ padding: '13px 16px', borderBottom: '1px solid var(--line)' }}>
+                  onClick={() => setFocusId(c.resourceId)} title="Click to draw this unit's Dijkstra route on the map"
+                  style={{ padding: '13px 16px', borderBottom: '1px solid var(--line)', cursor: 'pointer', boxShadow: focused === c.resourceId ? 'inset 3px 0 0 #ff3d57' : undefined, background: focused === c.resourceId ? 'rgba(255,61,87,.05)' : undefined }}>
                   <div className="row between">
                     <div className="row" style={{ gap: 12 }}>
                       <span className="mono" style={{ fontSize: 20, width: 28, color: i === 0 ? 'var(--amber)' : 'var(--text-faint)' }}>{i + 1}</span>
@@ -111,7 +112,9 @@ export default function RankingPage() {
               ))}
             </Panel>
             <div className="stack" style={{ gap: 16 }}>
-              <Panel title="Candidates on the map" bodyClass="flush"><NexaMap className="short" incidents={incidents} resources={resources} highlight={highlight} fitTo={fitTo} /></Panel>
+              <Panel title="Candidates on the map" hint="click a candidate to route it" bodyClass="flush">
+                {incident && <DispatchMap className="mid" incident={incident} candidates={r.candidates} picked={top3} focusId={focused} onFocus={setFocusId} maxCandidates={opts.limit} />}
+              </Panel>
               <Panel title="Suitability formula" tone="cyan">
                 <div className="formula">{r.formula}</div>
                 <div className="grid g-2" style={{ marginTop: 10, fontSize: 12 }}>

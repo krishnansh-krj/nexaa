@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Activity, ArrowLeft, BedDouble, ClipboardList, Crosshair, Edit3, Flame, MessageSquarePlus, Trash2, Truck } from 'lucide-react';
@@ -14,7 +14,8 @@ import IncidentForm from '../components/IncidentForm';
 import { Async } from '../components/Feedback';
 import { Chips, ScoreBar, SeverityBadge, SimBadge, StatusBadge } from '../components/Badges';
 import { TextArea } from '../components/Form';
-import NexaMap from '../maps/NexaMap';
+import NexaMap, { isClosedIncident } from '../maps/NexaMap';
+import MapLegend from '../maps/MapLegend';
 import { clock, km, mins, num, timeAgo } from '../services/format';
 
 const NEXT = { PENDING: ['ACTIVE', 'CONTAINED'], ACTIVE: ['CONTAINED', 'RESOLVED'], CONTAINED: ['ACTIVE', 'RESOLVED'], RESOLVED: ['ACTIVE', 'ARCHIVED'], ARCHIVED: [] };
@@ -45,9 +46,44 @@ export default function IncidentDetailPage() {
   useLiveFeed(() => inc.reload({ silent: true }), ['incident.', 'deployment.', 'request.', 'hospital.'], 600);
 
   const act = (fn, ok) => run(async () => { try { await fn(); toast.success(ok); inc.reload({ silent: true }); hosp.reload({ silent: true }); } catch (e) { toast.fromError(e); } });
-  const fitTo = useMemo(() => (inc.data ? [inc.data, ...(hosp.data || []).slice(0, 2).map((h) => h.hospital)] : null), [inc.data, hosp.data]);
   const incidentsLayer = useMemo(() => (inc.data ? [inc.data] : []), [inc.data]);
   const hospitalLayer = useMemo(() => (hosp.data || []).map((h) => h.hospital), [hosp.data]);
+
+  // positions of the units assigned to this incident (the incident file only carries their ids)
+  const assignedIds = (inc.data?.assigned || []).map((a) => a.resourceId).join(',');
+  const layers = useApi(() => api.layers(false), [assignedIds], { enabled: Boolean(assignedIds) });
+  const assignedUnits = useMemo(() => {
+    const byId = new Map((layers.data?.resources || []).map((r) => [r.id, r]));
+    return (inc.data?.assigned || []).map((a) => ({ a, r: byId.get(a.resourceId) })).filter((x) => x.r);
+  }, [inc.data, layers.data]);
+
+  // Dijkstra route from every assigned unit (max 4) to the incident
+  const [unitRoutes, setUnitRoutes] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    const d = inc.data;
+    if (!d || !assignedUnits.length) { setUnitRoutes([]); return undefined; }
+    Promise.all(assignedUnits.slice(0, 4).map(({ a, r }) => api.route({ fromLat: r.lat, fromLon: r.lon, toLat: d.lat, toLon: d.lon, mode: 'distance' })
+      .then((rt) => (rt.found ? { code: a.resourceCode, coords: [[r.lon, r.lat], ...rt.stops.map((s) => [s.lon, s.lat]), [d.lon, d.lat]], color: '#ff3d57', width: 3.5, label: `${a.resourceCode} · ${km(rt.distanceKm)} · ${mins(rt.minutes)}` } : null))
+      .catch(() => null)))
+      .then((list) => { if (alive) setUnitRoutes(list.filter(Boolean)); });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inc.data?.id, inc.data?.lat, inc.data?.lon, assignedUnits.map((x) => x.r.id).join(',')]);
+
+  const detailLinks = useMemo(() => {
+    const d = inc.data;
+    if (!d) return [];
+    const routed = new Set(unitRoutes.map((r) => r.code));
+    const units = assignedUnits.filter(({ a }) => !routed.has(a.resourceCode))
+      .map(({ a, r }) => ({ a: r, b: d, color: '#3ddc97', width: 2.4, label: `${a.resourceCode} · ${km(a.routeKm)} · ${mins(a.etaMinutes)}` }));
+    const hospitals = (hosp.data || []).slice(0, 3).map((h) => ({ a: d, b: h.hospital, color: '#9b8cff', dashed: true, width: 1.6, label: `${km(h.roadKm)} · ${mins(h.etaMinutes)}` }));
+    return [...units, ...hospitals];
+  }, [inc.data, assignedUnits, unitRoutes, hosp.data]);
+  const unitLayer = useMemo(() => assignedUnits.map(({ r }) => r), [assignedUnits]);
+  const detailFit = useMemo(() => (inc.data ? [inc.data, ...unitLayer, ...(hosp.data || []).slice(0, 2).map((h) => h.hospital)] : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inc.data?.id, unitLayer.length, hosp.data]);
 
   return (
     <Async state={inc} label="Loading incident file">
@@ -115,8 +151,11 @@ export default function IncidentDetailPage() {
 
             <div className="stack" style={{ gap: 16 }}>
               <Panel title="Priority breakdown" icon={ClipboardList} tone="alert"><PriorityBreakdown p={d.priority} /></Panel>
-              <Panel title="Location & nearest hospitals" icon={BedDouble} bodyClass="flush">
-                <NexaMap className="short" incidents={incidentsLayer} hospitals={hospitalLayer} fitTo={fitTo} />
+              <Panel title="Location, assigned units & nearest hospitals" icon={BedDouble} bodyClass="flush">
+                <NexaMap className="mid" incidents={incidentsLayer} hospitals={hospitalLayer} resources={unitLayer} routes={unitRoutes} links={detailLinks} fitTo={detailFit} layerControl>
+                  <MapLegend closed={isClosedIncident(d)} links={unitLayer.length > unitRoutes.length} route={unitRoutes.length > 0} regionHint={false} />
+                  {hospitalLayer.length > 0 && <div className="map-overlay dispatch-hud"><span className="hud-chip" style={{ color: '#9b8cff' }}>dashed violet = road distance to suitable hospitals</span></div>}
+                </NexaMap>
                 <div>
                   {(hosp.data || []).map((h) => (
                     <div key={h.hospital.id} style={{ padding: '10px 16px', borderTop: '1px solid var(--line)' }}>

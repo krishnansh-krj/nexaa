@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle2, Crosshair, Grid3x3, Shuffle, Truck, Zap } from 'lucide-react';
+import { CheckCircle2, Crosshair, Grid3x3, Navigation, Shuffle, Truck, Zap } from 'lucide-react';
 import { api } from '../services/api';
 import { useApi, useAction } from '../hooks/useApi';
 import { useLiveFeed } from '../hooks/useLiveFeed';
@@ -13,7 +13,7 @@ import Modal from '../components/Modal';
 import { Async } from '../components/Feedback';
 import { Field, NumberInput, Select } from '../components/Form';
 import { StatusBadge } from '../components/Badges';
-import NexaMap from '../maps/NexaMap';
+import DispatchMap from '../maps/DispatchMap';
 import { clock, km, mins } from '../services/format';
 
 function MatrixView({ m }) {
@@ -51,6 +51,7 @@ export default function AllocationPage() {
   const [incidentId, setIncidentId] = useState(params.get('incident') || '');
   const [picked, setPicked] = useState({});
   const [reassign, setReassign] = useState(null);
+  const [focusId, setFocusId] = useState(null);   // candidate whose Dijkstra route is drawn (default: best)
   const [busy, run] = useAction();
   const open = useApi(() => api.incidents({ limit: 200 }), []);
   useEffect(() => { if (!incidentId && open.data?.items?.length) setIncidentId(String(open.data.items[0].id)); }, [open.data, incidentId]);
@@ -59,17 +60,15 @@ export default function AllocationPage() {
   const matrix = useApi(() => api.matrix(), []);
   const refresh = () => { rank.reload({ silent: true }); deps.reload({ silent: true }); matrix.reload({ silent: true }); open.reload({ silent: true }); };
   useLiveFeed(refresh, ['deployment.', 'resource.'], 600);
-  useEffect(() => setPicked({}), [incidentId]);
+  useEffect(() => { setPicked({}); setFocusId(null); }, [incidentId]);
 
   const incident = open.data?.items?.find((i) => String(i.id) === String(incidentId));
   const act = (fn, ok) => run(async () => { try { const r = await fn(); toast.success(ok(r)); refresh(); setPicked({}); return r; } catch (e) { toast.fromError(e, 'Allocation rejected'); return null; } });
   const allocateAuto = () => act(() => api.allocate({ incidentId: Number(incidentId) }), (d) => `Deployment #${d.id}: ${d.resources.map((r) => r.resourceCode).join(', ')}`);
   const allocateManual = () => act(() => api.allocate({ incidentId: Number(incidentId), items: Object.entries(picked).map(([resourceId, units]) => ({ resourceId: Number(resourceId), units })) }), (d) => `Deployment #${d.id} created`);
 
-  const incidents = useMemo(() => (incident ? [incident] : []), [incident]);
-  const cands = useMemo(() => (rank.data?.candidates || []).map((c) => ({ id: c.resourceId, code: c.code, name: c.name, lat: c.lat, lon: c.lon, status: 'AVAILABLE', category: c.category, available: c.available, capacity: c.capacity })), [rank.data]);
-  const highlight = useMemo(() => ({ resources: new Set(Object.keys(picked).map(Number)) }), [picked]);
-  const fitTo = useMemo(() => (incident ? [incident, ...cands.slice(0, 4)] : null), [incident, cands]);
+  const pickedSet = useMemo(() => new Set(Object.keys(picked).map(Number)), [picked]);
+  const focused = focusId ?? rank.data?.candidates?.[0]?.resourceId;
 
   return (
     <>
@@ -90,13 +89,15 @@ export default function AllocationPage() {
             {(r) => r.candidates.map((c, i) => {
               const sel = picked[c.resourceId] !== undefined;
               return (
-                <motion.div key={c.resourceId} layout className="row between" style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)', background: sel ? 'var(--amber-soft)' : undefined }}>
+                <motion.div key={c.resourceId} layout className="row between" style={{ padding: '11px 16px', borderBottom: '1px solid var(--line)', background: sel ? 'var(--amber-soft)' : undefined, boxShadow: focused === c.resourceId ? 'inset 3px 0 0 #ff3d57' : undefined }}>
                   <label className="checkbox" style={{ gap: 12 }}>
                     <input type="checkbox" checked={sel} onChange={(e) => setPicked((p) => { const n = { ...p }; if (e.target.checked) n[c.resourceId] = 1; else delete n[c.resourceId]; return n; })} />
                     <span><span className="mono" style={{ color: 'var(--text)', fontWeight: 700 }}>{i + 1}. {c.code}</span><span className="cell-sub" style={{ display: 'block' }}>{c.reason}</span></span>
                   </label>
                   <div className="row" style={{ gap: 10 }}>
                     {sel && c.capacity > 1 && <div style={{ width: 80 }}><NumberInput value={picked[c.resourceId]} min={1} max={c.available} onChange={(v) => setPicked((p) => ({ ...p, [c.resourceId]: Math.max(1, Math.min(c.available, Number(v) || 1)) }))} /></div>}
+                    <span className="mono faint" style={{ fontSize: 11, textAlign: 'right' }}>{km(c.roadKm)}<br />{mins(c.etaMinutes)}</span>
+                    <button className={`btn sm ${focused === c.resourceId ? 'danger' : 'ghost'}`} title="Draw the Dijkstra route from this unit to the incident" onClick={() => setFocusId(c.resourceId)}><Navigation size={12} />Route</button>
                     <span className="mono" style={{ color: 'var(--amber)', fontWeight: 700, width: 50, textAlign: 'right' }}>{c.score.toFixed(1)}</span>
                   </div>
                 </motion.div>
@@ -104,7 +105,12 @@ export default function AllocationPage() {
             })}
           </Async>
         </Panel>
-        <Panel title="Dispatch view" bodyClass="flush"><NexaMap className="short" incidents={incidents} resources={cands} highlight={highlight} fitTo={fitTo} /></Panel>
+        <Panel title="Dispatch view" hint="Dijkstra route · KD-tree nearest · allocated units" bodyClass="flush">
+          {incident ? (
+            <DispatchMap className="mid" incident={incident} candidates={rank.data?.candidates || []} deployments={deps.data || []}
+              picked={pickedSet} focusId={focused} onFocus={setFocusId} />
+          ) : <div className="empty">Select an incident</div>}
+        </Panel>
       </div>
 
       <div style={{ height: 16 }} />
