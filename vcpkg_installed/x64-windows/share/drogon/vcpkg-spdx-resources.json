@@ -1,0 +1,19 @@
+{
+  "packages": [
+{
+  "SPDXID" : "SPDXRef-resource-0",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "19108dc00cfe0ca46eb45e1c47808ba742f41626407ced322202c417a1ce159e787fbe54c435c6543790df6ee97447875555d4a81cfcfd55bb82a2778e57cf4b"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "git+https://github.com/drogonframework/drogon@v1.9.14",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "drogonframework/drogon"
+}
+  ]
+}

@@ -1,43 +1,18 @@
-
-# Build output
+# build outputs
+backend/build/
 build/
-cmake-build-*/
-out/
-Debug/
-Release/
-
-# vcpkg installed dependencies
-vcpkg_installed/
-**/vcpkg_installed/
-
-# IDE files
-.vs/
-.vscode/
-*.user
-*.suo
-
-# Compiled files
-*.exe
-*.dll
+*.o
 *.obj
-*.lib
+*.exe
 *.pdb
-
-# Node dependencies and build output
-node_modules/
-dist/
-
-# Python generated files
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
-# Secrets and local configuration
+# node
+frontend/node_modules/
+frontend/dist/
+# runtime
+logs/*.log
+backend/config.json
+database/backups/*.sql
 .env
-.env.*
-!.env.example
-
-# OS files
 .DS_Store
-Thumbs.db
+.vscode/
+.idea/

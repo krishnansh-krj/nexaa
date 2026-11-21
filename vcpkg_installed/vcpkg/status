@@ -1,0 +1,124 @@
+Package: vcpkg-cmake-config
+Version: 2026-07-21
+Architecture: x64-windows
+Multi-Arch: same
+Abi: b0e32d17877363f059dcd1164b06d7c719cef75fb61bfba311be96364d1c01e3
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2025-08-07
+Architecture: x64-windows
+Multi-Arch: same
+Abi: a1377902de6bd93fc97e985ed670ff980b3f753d5c47e4848d1cbf70ecb6f42e
+Status: install ok installed
+
+Package: zlib
+Version: 1.4
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: a0490ebcbd763db433d98e2592eb7fa04edeb468ab23ba8c25877646926055a6
+Description: A compression library
+Status: install ok installed
+
+Package: libmariadb
+Version: 3.4.11
+Depends: vcpkg-cmake, vcpkg-cmake-config, zlib
+Architecture: x64-windows
+Multi-Arch: same
+Abi: fe1dc2455e25c91315870a633b7118e0e8f365e7ca8eae0e6f1c48f11066ffdc
+Description: MariaDB Connector/C is used to connect C/C++ applications to MariaDB and MySQL databases
+Status: install ok installed
+
+Package: libmariadb
+Feature: iconv
+Architecture: x64-windows
+Multi-Arch: same
+Description: Enables character set conversion
+Status: install ok installed
+
+Package: vcpkg-cmake-get-vars
+Version: 2025-05-29
+Depends: vcpkg-cmake
+Architecture: x64-windows
+Multi-Arch: same
+Abi: ac649f6f27daebc86cbdd3533a97ba9fbe505b997db07d23cc0b018e67d05143
+Status: install ok installed
+
+Package: openssl
+Version: 3.6.5
+Port-Version: 2
+Depends: vcpkg-cmake, vcpkg-cmake-config, vcpkg-cmake-get-vars
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 15ca3781628bd1a4cce381ef20fc3a352fcb2e2f018d2b0d7d8e29165ff0ef73
+Description: OpenSSL is an open source project that provides a robust, commercial-grade, and full-featured toolkit for the Transport Layer Security (TLS) and Secure Sockets Layer (SSL) protocols. It is also a general-purpose cryptography library.
+Status: install ok installed
+
+Package: c-ares
+Version: 1.34.9
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: d6fa40e938914e9eddbd6b99e97fc5cb51964d53e1cad6ff5f6b778e4c0cb7e7
+Description: A C library for asynchronous DNS requests
+Status: install ok installed
+
+Package: trantor
+Version: 1.5.29
+Depends: c-ares, openssl, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: aea63452082ab472ee3a16d826338b945fbfcd89dac1eb40dbffdfa0802611b7
+Description: A non-blocking I/O cross-platform TCP network library, using C++14
+Status: install ok installed
+
+Package: jsoncpp
+Version: 1.9.6
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: e9c68201dfa3a6ae551e83a7d601153b49a227f91ebc60ddcc83e5f3a655948d
+Description: JsonCpp is a C++ library that allows manipulating JSON values, including serialization and deserialization to and from strings. It can also preserve existing comment in unserialization/serialization steps, making it a convenient format to store user input files.
+Status: install ok installed
+
+Package: brotli
+Version: 1.2.1
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: f88b1330e83f6bfb1d8d1d295f094067feaa9d13e7643714c5531a744f310b52
+Description: a generic-purpose lossless compression algorithm that compresses data using a combination of a modern variant of the LZ77 algorithm, Huffman coding and 2nd order context modeling.
+Status: install ok installed
+
+Package: drogon
+Version: 1.9.14
+Depends: brotli, jsoncpp, trantor, vcpkg-cmake, vcpkg-cmake-config, zlib
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 922fef27a5779b546d98c287f01091a5ec90726424649c1969cfe5706c3a89a0
+Description: A C++17/20 based HTTP web application framework running on Linux/macOS/Unix/Windows
+Status: install ok installed
+
+Package: drogon
+Feature: ctl
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build drogon_ctl tool.
+Status: install ok installed
+
+Package: drogon
+Feature: mysql
+Depends: libmariadb
+Architecture: x64-windows
+Multi-Arch: same
+Description: Support reading and writing from/to MySQL databases.
+Status: install ok installed
+
+Package: drogon
+Feature: orm
+Architecture: x64-windows
+Multi-Arch: same
+Description: Build with object-relational mapping support.
+Status: install ok installed
+

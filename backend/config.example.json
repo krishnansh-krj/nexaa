@@ -1,0 +1,48 @@
+{
+  "listeners": [
+    { "address": "0.0.0.0", "port": 8080, "https": false }
+  ],
+  "app": {
+    "number_of_threads": 4,
+    "log": { "log_level": "INFO" },
+    "enable_server_header": false,
+    "max_connections": 10000,
+    "client_max_body_size": "4M"
+  },
+  "custom_config": {
+    "mysql": {
+      "host": "127.0.0.1",
+      "port": 3306,
+      "database": "nexa",
+      "user": "nexa_app",
+      "password": "change-me",
+      "connections": 4
+    },
+    "nexa": {
+      "storage": "mysql",
+      "auto_seed": true,
+      "log_file": "../logs/nexa.log",
+      "escalation_threshold": 70,
+      "candidate_pool": 30,
+      "average_speed_kmh": 30,
+      "priority_weights": {
+        "severity": 0.35,
+        "affected": 0.20,
+        "unmet": 0.15,
+        "age": 0.10,
+        "status": 0.10,
+        "time_sensitivity": 0.10,
+        "age_saturation_hours": 24,
+        "affected_saturation": 10000
+      },
+      "suitability_weights": {
+        "capability": 0.40,
+        "proximity": 0.30,
+        "availability": 0.15,
+        "capacity": 0.15,
+        "proximity_scale_km": 10,
+        "detour_factor": 1.3
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "packages": [
+{
+  "SPDXID" : "SPDXRef-resource-0",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "2c690c3613f8d3cbc0834881d2f731c3d935e5b9002ddcbca4a298a6fc7c2cb81d72f25516b5dc8b367208fb4e3ae1544af9f1046eade5acc52f144490f7b615"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "git+https://github.com/an-tao/trantor@v1.5.29",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "an-tao/trantor"
+}
+  ]
+}

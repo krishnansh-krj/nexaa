@@ -1,119 +1,101 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.16)
+project(NEXA VERSION 1.0.0 LANGUAGES CXX)
 
-project(NEXA_Backend LANGUAGES C CXX)
-
-option(NEXA_BUILD_SERVER "Build the Drogon-powered NEXA backend server" ON)
-option(NEXA_BUILD_TESTS "Build NEXA backend unit tests" ON)
-
-set(NEXA_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-if(NEXA_BUILD_SERVER)
-    find_package(Drogon CONFIG REQUIRED)
-
-    add_executable(nexa_backend
-        src/main.cpp
-        src/config/DatabaseConfig.cpp
-        src/utilities/Validation.cpp
-        src/utilities/ApiResponse.cpp
-        src/controllers/ApiRoutes.cpp
-        src/services/NetworkGraphService.cpp
-        src/services/AllocationService.cpp
-        src/services/IncidentEventService.cpp
-        src/services/IncidentService.cpp
-        src/services/NetworkService.cpp
-        src/services/RequestPrioritizationService.cpp
-        src/services/RequestService.cpp
-        src/services/ResourceService.cpp
-        src/services/ResourceMatchingService.cpp
-        src/data_structures/Graph.cpp
-        src/data_structures/MinHeap.cpp
-        src/algorithms/BFS.cpp
-        src/algorithms/DFS.cpp
-        src/algorithms/Dijkstra.cpp
-        src/algorithms/RequestPrioritizer.cpp
-        src/repositories/AllocationRepository.cpp
-        src/repositories/IncidentEventRepository.cpp
-        src/repositories/IncidentRepository.cpp
-        src/repositories/NetworkRepository.cpp
-        src/repositories/RequestRepository.cpp
-        src/repositories/ResourceRepository.cpp
-        src/controllers/DsaRoutes.cpp
-        src/services/DsaIntelligenceService.cpp
-        src/services/IncidentCommandService.cpp
-        src/intelligence/IntelligenceEngine.cpp
-    )
-
-    target_include_directories(nexa_backend PRIVATE "${NEXA_INCLUDE_DIR}")
-    target_link_libraries(nexa_backend PRIVATE Drogon::Drogon)
-    target_compile_features(nexa_backend PRIVATE cxx_std_20)
+# ----------------------------------------------------------------------------
+# Targets
+#   nexa_engine   static library: data structures, algorithms, models,
+#                 services (no Drogon dependency -> unit-testable anywhere)
+#   nexa_server   Drogon HTTP/WebSocket server + MySQL repositories
+#   nexa_tests    GoogleTest suite (falls back to a bundled shim if GTest
+#                 is not installed, so `ctest` always works)
+#   export_seed_sql  tool: writes database/seed/seed_demo.sql from the seeder
+# ----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release)
 endif()
 
-if(NEXA_BUILD_TESTS)
-    include(CTest)
+option(NEXA_BUILD_SERVER "Build the Drogon server (requires Drogon + MySQL client)" ON)
+option(NEXA_BUILD_TESTS  "Build unit/integration tests" ON)
 
-    add_executable(nexa_dsa_test
-        tests/dsa_test.cpp
-        src/data_structures/Graph.cpp
-        src/data_structures/MinHeap.cpp
-        src/algorithms/BFS.cpp
-        src/algorithms/DFS.cpp
-        src/algorithms/Dijkstra.cpp
-    )
-    target_include_directories(nexa_dsa_test PRIVATE "${NEXA_INCLUDE_DIR}")
-    target_compile_features(nexa_dsa_test PRIVATE cxx_std_20)
-    add_test(NAME nexa_dsa_test COMMAND nexa_dsa_test)
+if(MSVC)
+    add_compile_options(/W4 /utf-8 /bigobj /permissive- /Zc:__cplusplus)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
+else()
+    add_compile_options(-Wall -Wextra)
+endif()
 
-    add_executable(nexa_request_prioritizer_test
-        tests/request_prioritizer_test.cpp
-        src/algorithms/RequestPrioritizer.cpp
-    )
-    target_include_directories(nexa_request_prioritizer_test PRIVATE "${NEXA_INCLUDE_DIR}")
-    target_compile_features(nexa_request_prioritizer_test PRIVATE cxx_std_20)
-    add_test(NAME nexa_request_prioritizer_test COMMAND nexa_request_prioritizer_test)
+find_package(Threads REQUIRED)
 
-    add_executable(nexa_type_mapping_test
-    tests/type_mapping_test.cpp
+# ---------------------------------------------------------------- engine
+set(NEXA_ENGINE_SOURCES
+    src/services/PriorityEngine.cpp
+    src/services/SpatialService.cpp
+    src/services/NetworkService.cpp
+    src/services/IncidentService.cpp
+    src/services/ResourceService.cpp
+    src/services/RankingService.cpp
+    src/services/AllocationService.cpp
+    src/services/RequestService.cpp
+    src/services/HospitalService.cpp
+    src/services/AnalyticsService.cpp
+    src/services/AuthService.cpp
+    src/services/SimulationService.cpp
+    src/services/DsaLabService.cpp
+    src/services/Bootstrap.cpp
+    src/services/DemoSeeder.cpp
 )
+add_library(nexa_engine STATIC ${NEXA_ENGINE_SOURCES})
+target_include_directories(nexa_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(nexa_engine PUBLIC Threads::Threads)
 
-target_include_directories(nexa_type_mapping_test
-    PRIVATE "${NEXA_INCLUDE_DIR}"
-)
-
-target_compile_features(nexa_type_mapping_test
-    PRIVATE cxx_std_20
-)
-
-add_test(
-    NAME nexa_type_mapping_test
-    COMMAND nexa_type_mapping_test
-)
-
-    # Synopsis data-structure suite (header-only include/dsa, no Drogon needed)
-    add_executable(nexa_dsa_suite_test
-        tests/dsa_suite_test.cpp
+# ---------------------------------------------------------------- server
+if(NEXA_BUILD_SERVER)
+    find_package(Drogon CONFIG REQUIRED)
+    add_executable(nexa_server
+        src/main.cpp
+        src/controllers/ApiSupport.cpp
+        src/controllers/JsonMappers.cpp
+        src/controllers/SystemControllers.cpp
+        src/controllers/OperationsControllers.cpp
+        src/controllers/GeoControllers.cpp
+        src/controllers/InsightControllers.cpp
+        src/repositories/MySqlRepositories.cpp
     )
-    target_include_directories(nexa_dsa_suite_test PRIVATE "${NEXA_INCLUDE_DIR}")
-    target_compile_features(nexa_dsa_suite_test PRIVATE cxx_std_20)
-    add_test(NAME nexa_dsa_suite_test COMMAND nexa_dsa_suite_test)
-
-    # Incident status lifecycle rules
-    add_executable(nexa_incident_lifecycle_test
-        tests/incident_lifecycle_test.cpp
-    )
-    target_include_directories(nexa_incident_lifecycle_test PRIVATE "${NEXA_INCLUDE_DIR}")
-    target_compile_features(nexa_incident_lifecycle_test PRIVATE cxx_std_20)
-    add_test(NAME nexa_incident_lifecycle_test COMMAND nexa_incident_lifecycle_test)
-
-    # Intelligence engine integration test (needs jsoncpp, shipped with Drogon)
-    if(NEXA_BUILD_SERVER)
-        add_executable(nexa_intelligence_engine_test
-            tests/intelligence_engine_test.cpp
-            src/intelligence/IntelligenceEngine.cpp
-            src/algorithms/RequestPrioritizer.cpp
-        )
-        target_include_directories(nexa_intelligence_engine_test PRIVATE "${NEXA_INCLUDE_DIR}")
-        target_link_libraries(nexa_intelligence_engine_test PRIVATE Drogon::Drogon)
-        target_compile_features(nexa_intelligence_engine_test PRIVATE cxx_std_20)
-        add_test(NAME nexa_intelligence_engine_test COMMAND nexa_intelligence_engine_test)
+    target_link_libraries(nexa_server PRIVATE nexa_engine Drogon::Drogon)
+    # copy a starter config next to the binary (never overwrites an edited one)
+    if(NOT EXISTS ${CMAKE_CURRENT_BINARY_DIR}/config.json)
+        configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.example.json ${CMAKE_CURRENT_BINARY_DIR}/config.json COPYONLY)
     endif()
+endif()
+
+# ---------------------------------------------------------------- tools
+add_executable(export_seed_sql tools/export_seed_sql.cpp)
+target_link_libraries(export_seed_sql PRIVATE nexa_engine)
+
+# ---------------------------------------------------------------- tests
+if(NEXA_BUILD_TESTS)
+    enable_testing()
+    set(NEXA_TEST_SOURCES
+        tests/test_linear_structures.cpp
+        tests/test_trees_hash_heap.cpp
+        tests/test_algorithms.cpp
+        tests/test_spatial_text_range.cpp
+        tests/test_workflow.cpp
+    )
+    find_package(GTest QUIET)
+    if(GTest_FOUND)
+        add_executable(nexa_tests ${NEXA_TEST_SOURCES})
+        target_compile_definitions(nexa_tests PRIVATE NEXA_USE_REAL_GTEST)
+        target_link_libraries(nexa_tests PRIVATE nexa_engine GTest::gtest GTest::gtest_main)
+        message(STATUS "NEXA tests: using GoogleTest")
+    else()
+        add_executable(nexa_tests ${NEXA_TEST_SOURCES} tests/support/test_main.cpp)
+        target_link_libraries(nexa_tests PRIVATE nexa_engine)
+        message(STATUS "NEXA tests: GoogleTest not found, using bundled shim (tests/support/mini_gtest.h)")
+    endif()
+    target_include_directories(nexa_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    add_test(NAME nexa_tests COMMAND nexa_tests)
 endif()

@@ -1,0 +1,19 @@
+{
+  "packages": [
+{
+  "SPDXID" : "SPDXRef-resource-0",
+  "checksums" : 
+  [
+    {
+      "algorithm" : "SHA512",
+      "checksumValue" : "264591e619498a44b1205a20d810d4c6ff9a93e4dbd1de7c939eca5237d87b00c5b9c823f660ee044fc045a81bbd86b3bbafbc26d1d145477b338fb7ac72273e"
+    }
+  ],
+  "copyrightText" : "NOASSERTION",
+  "downloadLocation" : "git+https://github.com/c-ares/c-ares@v1.34.9",
+  "licenseConcluded" : "NOASSERTION",
+  "licenseDeclared" : "NOASSERTION",
+  "name" : "c-ares/c-ares"
+}
+  ]
+}

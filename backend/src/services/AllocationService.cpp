@@ -1,790 +1,263 @@
 #include "services/AllocationService.hpp"
-#include "utilities/TypeMapping.hpp"
-#include <utility>
-namespace nexa {
-AllocationService::AllocationService(
-    std::shared_ptr<drogon::orm::DbClient> db)
-    : dbClient(std::move(db)) {}
+#include "algorithms/Sorting.hpp"
+#include <cmath>
+#include <cstdio>
 
-AllocationService::CompletionState::CompletionState(OperationCallback cb) : callback(std::move(cb)) {}
-void AllocationService::CompletionState::finish(bool success, const std::string& message) { if (!completed.exchange(true) && callback) callback(success, message); }
+namespace nexa::svc {
 
-
-void AllocationService::refreshRequestStatus(
-    const std::shared_ptr<drogon::orm::Transaction>& trans,
-    unsigned long long requestId,
-    std::function<void()> onSuccess,
-    std::function<void(const std::string&)> onFailure)
-{
-    trans->execSqlAsync(
-        "SELECT quantity_required, status "
-        "FROM emergency_requests "
-        "WHERE request_id = ? FOR UPDATE",
-
-        [=](const drogon::orm::Result& requestResult)
-        {
-            if (requestResult.empty())
-            {
-                if (onFailure)
-                    onFailure("Linked emergency request not found");
-                return;
-            }
-
-            const std::string currentStatus =
-                requestResult[0]["status"].as<std::string>();
-
-            // A cancelled request must never be automatically reopened
-            // by an allocation or release operation.
-            if (currentStatus == "CANCELLED")
-            {
-                if (onSuccess)
-                    onSuccess();
-                return;
-            }
-
-            const unsigned int quantityRequired =
-                requestResult[0]["quantity_required"]
-                    .as<unsigned int>();
-
-            if (quantityRequired == 0)
-            {
-                if (onFailure)
-                {
-                    onFailure(
-                        "Emergency request has invalid required quantity");
-                }
-                return;
-            }
-
-            trans->execSqlAsync(
-                "SELECT COALESCE(SUM(allocated_units), 0) "
-                "AS active_units "
-                "FROM resource_allocations "
-                "WHERE request_id = ? "
-                "AND status IN ('ASSIGNED', 'DISPATCHED', 'ON_SITE')",
-
-                [=](const drogon::orm::Result& sumResult)
-                {
-                    const unsigned long long activeUnits =
-                        sumResult[0]["active_units"]
-                            .as<unsigned long long>();
-
-                    const std::string newStatus =
-                        activeUnits >= quantityRequired
-                            ? "FULFILLED"
-                            : (activeUnits > 0
-                                ? "PROCESSING"
-                                : "PENDING");
-
-                    trans->execSqlAsync(
-                        "UPDATE emergency_requests "
-                        "SET status = ? "
-                        "WHERE request_id = ? "
-                        "AND status <> 'CANCELLED'",
-
-                        [onSuccess](const drogon::orm::Result&)
-                        {
-                            if (onSuccess)
-                                onSuccess();
-                        },
-
-                        [onFailure](
-                            const drogon::orm::DrogonDbException& e)
-                        {
-                            if (onFailure)
-                                onFailure(e.base().what());
-                        },
-
-                        newStatus,
-                        requestId
-                    );
-                },
-
-                [onFailure](
-                    const drogon::orm::DrogonDbException& e)
-                {
-                    if (onFailure)
-                        onFailure(e.base().what());
-                },
-
-                requestId
-            );
-        },
-
-        [onFailure](
-            const drogon::orm::DrogonDbException& e)
-        {
-            if (onFailure)
-                onFailure(e.base().what());
-        },
-
-        requestId
-    );
+namespace {
+std::string fmt1(double v) { char b[32]; std::snprintf(b, sizeof b, "%.1f", v); return b; }
 }
 
-    void AllocationService::allocate(
-        unsigned long long incidentId,
-        unsigned long long resourceId,
-        unsigned int units,
-        std::optional<unsigned long long> requestId,
-        OperationCallback callback)
-{
-        if (!callback)
-            return;
+void AllocationService::indexDeployment(const Deployment& d) {
+    auto& s = ctx_.store;
+    if (d.status != DeploymentStatus::Active) return;
+    for (const auto& dr : d.resources) {
+        if (dr.released) continue;
+        s.links.link(d.incidentId, dr.resourceId, d.id);
+        s.unitsMatrix.add(d.incidentId, dr.resourceId, dr.units);
+        s.windowsOf(s.commitments, dr.resourceId).insert(ds::Interval{d.createdAt, OPEN_END, d.id});
+    }
+}
 
-        if (!dbClient)
-        {
-            callback(false, "Database client is unavailable");
-            return;
+Deployment AllocationService::allocate(const AllocationRequest& req, const std::string& actor) {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    auto& s = ctx_.store;
+    const Incident* incPtr = s.incidents.get(req.incidentId);
+    if (!incPtr) throw NotFoundError("Incident " + std::to_string(req.incidentId) + " not found");
+    if (!PriorityEngine::isOpen(incPtr->status)) throw ConflictError("Cannot deploy to a " + std::string(toString(incPtr->status)) + " incident");
+    Incident inc = *incPtr;
+    const EmergencyRequest* reqPtr = nullptr;
+    if (req.requestId) {
+        reqPtr = s.requests.get(req.requestId);
+        if (!reqPtr) throw NotFoundError("Emergency request " + std::to_string(req.requestId) + " not found");
+        if (reqPtr->incidentId != inc.id) throw ValidationError("Request belongs to a different incident");
+        if (reqPtr->status == RequestStatus::Fulfilled || reqPtr->status == RequestStatus::Cancelled) throw ConflictError("Request is already closed");
+    }
+
+    // ---- 1. choose resources -------------------------------------------------
+    DynamicArray<DeploymentResource> chosen;
+    long now = util::nowEpoch();
+    if (req.items.empty()) {
+        RankOptions opt; opt.limit = 20; opt.category = req.category; opt.unitsNeeded = req.autoUnits;
+        RankingResult rk = ranking_.rankForIncident(inc.id, opt);
+        int need = rk.unitsNeeded;
+        for (const auto& c : rk.candidates) {
+            if (need <= 0) break;
+            const Resource* r = s.resources.get(c.resourceId);
+            if (r->capacity == 1 && s.windowsOf(s.commitments, r->id).anyOverlap(now, OPEN_END)) continue;
+            if (s.links.find(inc.id, r->id)) continue;     // already serving this incident
+            int units = c.available < need ? c.available : need;
+            DeploymentResource dr;
+            dr.resourceId = c.resourceId; dr.resourceCode = c.code; dr.units = units;
+            dr.suitability = c.score; dr.routeKm = c.roadKm; dr.etaMinutes = c.etaMinutes;
+            dr.reason = "Auto-selected (rank " + std::to_string(chosen.size() + 1) + ", suitability " + fmt1(c.score) + "): " + c.reason;
+            chosen.pushBack(dr);
+            need -= units;
         }
-
-        if (incidentId == 0 || resourceId == 0 || units == 0)
-        {
-            callback(false, "Invalid allocation details");
-            return;
-        }
-
-        if (requestId.has_value() && requestId.value() == 0)
-        {
-            callback(false, "Invalid emergency request ID");
-            return;
-        }
-
-        auto state =
-            std::make_shared<CompletionState>(std::move(callback));
-
-        dbClient->newTransactionAsync(
-            [=](const std::shared_ptr<drogon::orm::Transaction>& trans)
-            {
-                if (!trans)
-                {
-                    state->finish(
-                        false,
-                        "Could not create database transaction"
-                    );
-                    return;
-                }
-
-                auto fail = [trans, state](
-                    const std::string& message)
-                {
-                    trans->rollback();
-                    state->finish(false, message);
-                };
-
-                trans->setCommitCallback(
-                    [state](bool committed)
-                    {
-                        state->finish(
-                            committed,
-                            committed
-                                ? "Resource allocated successfully"
-                                : "Allocation commit failed"
-                        );
-                    }
-                );
-
-                // STEP 1: Lock and validate resource.
-                trans->execSqlAsync(
-                    "SELECT available_units, status, resource_type "
-                    "FROM resources "
-                    "WHERE resource_id = ? FOR UPDATE",
-
-                    [=](const drogon::orm::Result& resourceResult)
-                    {
-                        if (resourceResult.empty())
-                        {
-                            fail("Resource not found");
-                            return;
-                        }
-
-                        const unsigned int available =
-                            resourceResult[0]["available_units"]
-                                .as<unsigned int>();
-
-                        const std::string resourceStatus =
-                            resourceResult[0]["status"]
-                                .as<std::string>();
-
-                        const std::string resourceType =
-                            resourceResult[0]["resource_type"]
-                                .as<std::string>();
-
-                        if (resourceStatus != "AVAILABLE" ||
-                            available < units)
-                        {
-                            fail(
-                                "Resource is unavailable or has "
-                                "insufficient units"
-                            );
-                            return;
-                        }
-
-                        // STEP 2: Lock and validate incident.
-                        trans->execSqlAsync(
-                            "SELECT status FROM incidents "
-                            "WHERE incident_id = ? FOR UPDATE",
-
-                            [=](const drogon::orm::Result& incidentResult)
-                            {
-                                if (incidentResult.empty())
-                                {
-                                    fail("Incident not found");
-                                    return;
-                                }
-
-                                const std::string incidentStatus =
-                                    incidentResult[0]["status"]
-                                        .as<std::string>();
-
-                                if (incidentStatus != "ACTIVE")
-                                {
-                                    fail(
-                                        "Incident must be ACTIVE "
-                                        "before allocation"
-                                    );
-                                    return;
-                                }
-
-                                // STEP 3: Insert allocation.
-                                auto insertAllocation = [=]()
-                                {
-                                    auto onInserted =
-                                        [=](const drogon::orm::Result&)
-                                    {
-                                        // STEP 4: Decrease inventory.
-                                        trans->execSqlAsync(
-                                            "UPDATE resources SET "
-                                            "status = CASE "
-                                            "WHEN available_units = ? "
-                                            "THEN 'DEPLOYED' "
-                                            "ELSE 'AVAILABLE' END, "
-                                            "available_units = available_units - ? "
-                                            "WHERE resource_id = ? "
-                                            "AND available_units >= ?",
-
-                                            [=](const drogon::orm::Result& updateResult)
-                                            {
-                                                if (updateResult.affectedRows() != 1)
-                                                {
-                                                    fail(
-                                                        "Resource inventory "
-                                                        "update failed"
-                                                    );
-                                                    return;
-                                                }
-
-                                                // STEP 5: Record incident event.
-                                                trans->execSqlAsync(
-                                                    "INSERT INTO incident_events "
-                                                    "(incident_id, event_type, description) "
-                                                    "VALUES (?, ?, ?)",
-
-                                                    [=](const drogon::orm::Result&)
-                                                    {
-                                                        if (!requestId.has_value())
-                                                            return;
-
-                                                        refreshRequestStatus(
-                                                            trans,
-                                                            requestId.value(),
-                                                            []() {},
-                                                            [=](const std::string& message)
-                                                            {
-                                                                fail(message);
-                                                            }
-                                                        );
-                                                    },
-
-                                                    [=](const drogon::orm::DrogonDbException& e)
-                                                    {
-                                                        fail(e.base().what());
-                                                    },
-
-                                                    incidentId,
-                                                    std::string("RESOURCE_ALLOCATED"),
-                                                    std::string(
-                                                        "Emergency resource allocated"
-                                                    )
-                                                );
-                                            },
-
-                                            [=](const drogon::orm::DrogonDbException& e)
-                                            {
-                                                fail(e.base().what());
-                                            },
-
-                                            units,
-                                            units,
-                                            resourceId,
-                                            units
-                                        );
-                                    };
-
-                                    auto onInsertError =
-                                        [=](const drogon::orm::DrogonDbException& e)
-                                    {
-                                        fail(e.base().what());
-                                    };
-
-                                    if (requestId.has_value())
-                                    {
-                                        trans->execSqlAsync(
-                                            "INSERT INTO resource_allocations "
-                                            "(incident_id, resource_id, "
-                                            "request_id, allocated_units) "
-                                            "VALUES (?, ?, ?, ?)",
-
-                                            onInserted,
-                                            onInsertError,
-
-                                            incidentId,
-                                            resourceId,
-                                            requestId.value(),
-                                            units
-                                        );
-                                    }
-                                    else
-                                    {
-                                        trans->execSqlAsync(
-                                            "INSERT INTO resource_allocations "
-                                            "(incident_id, resource_id, "
-                                            "request_id, allocated_units) "
-                                            "VALUES (?, ?, NULL, ?)",
-
-                                            onInserted,
-                                            onInsertError,
-
-                                            incidentId,
-                                            resourceId,
-                                            units
-                                        );
-                                    }
-                                };
-
-                                // Direct allocation without request.
-                                if (!requestId.has_value())
-                                {
-                                    insertAllocation();
-                                    return;
-                                }
-
-                                // STEP 3A: Lock emergency request.
-                                trans->execSqlAsync(
-                                    "SELECT status, quantity_required, request_type "
-                                    "FROM emergency_requests "
-                                    "WHERE request_id = ? "
-                                    "AND incident_id = ? FOR UPDATE",
-
-                                    [=](const drogon::orm::Result& requestResult)
-                                    {
-                                        if (requestResult.empty())
-                                        {
-                                            fail(
-                                                "Emergency request not found "
-                                                "for this incident"
-                                            );
-                                            return;
-                                        }
-
-                                        const std::string requestStatus =
-                                            requestResult[0]["status"]
-                                                .as<std::string>();
-
-                                        const unsigned int quantityRequired =
-                                            requestResult[0]["quantity_required"]
-                                                .as<unsigned int>();
-
-                                        const std::string requestType =
-                                            requestResult[0]["request_type"]
-                                                .as<std::string>();
-
-                                        // STEP 3B: Validate resource type.
-                                        if (!isCompatibleResource(requestType, resourceType))
-                                        {
-                                            fail(
-                                                "Resource type is not compatible "
-                                                "with the emergency request type"
-                                            );
-                                             return;
-                                        }
-
-                                        if (requestStatus != "PENDING" &&
-                                            requestStatus != "PROCESSING")
-                                        {
-                                            fail(
-                                                "Emergency request is not "
-                                                "available for allocation"
-                                            );
-                                            return;
-                                        }
-
-                                        if (quantityRequired == 0)
-                                        {
-                                            fail(
-                                                "Emergency request has "
-                                                "invalid required quantity"
-                                            );
-                                            return;
-                                        }
-
-                                        // STEP 3C: Calculate existing active allocations.
-                                        trans->execSqlAsync(
-                                            "SELECT COALESCE(SUM(allocated_units), 0) "
-                                            "AS allocated_units "
-                                            "FROM resource_allocations "
-                                            "WHERE request_id = ? "
-                                            "AND status IN "
-                                            "('ASSIGNED', 'DISPATCHED', 'ON_SITE')",
-
-                                            [=](const drogon::orm::Result& sumResult)
-                                            {
-                                                const unsigned long long alreadyAllocated =
-                                                    sumResult[0]["allocated_units"]
-                                                        .as<unsigned long long>();
-
-                                                // STEP 3D: Prevent over-allocation.
-                                                if (alreadyAllocated >= quantityRequired ||
-                                                    units > quantityRequired - alreadyAllocated)
-                                                {
-                                                    fail(
-                                                        "Allocation exceeds the remaining "
-                                                        "quantity required by this "
-                                                        "emergency request"
-                                                    );
-                                                    return;
-                                                }
-
-                                                // STEP 3E: Mark request as processing.
-                                                trans->execSqlAsync(
-                                                    "UPDATE emergency_requests "
-                                                    "SET status = 'PROCESSING' "
-                                                    "WHERE request_id = ? "
-                                                    "AND incident_id = ?",
-
-                                                    [=](const drogon::orm::Result&)
-                                                    {
-                                                        insertAllocation();
-                                                    },
-
-                                                    [=](const drogon::orm::DrogonDbException& e)
-                                                    {
-                                                        fail(e.base().what());
-                                                    },
-
-                                                    requestId.value(),
-                                                    incidentId
-                                                );
-                                            },
-
-                                            [=](const drogon::orm::DrogonDbException& e)
-                                            {
-                                                fail(e.base().what());
-                                            },
-
-                                            requestId.value()
-                                        );
-                                    },
-
-                                    [=](const drogon::orm::DrogonDbException& e)
-                                    {
-                                        fail(e.base().what());
-                                    },
-
-                                    requestId.value(),
-                                    incidentId
-                                );
-                            },
-
-                            [=](const drogon::orm::DrogonDbException& e)
-                            {
-                                fail(e.base().what());
-                            },
-
-                            incidentId
-                        );
-                    },
-
-                    [=](const drogon::orm::DrogonDbException& e)
-                    {
-                        fail(e.base().what());
-                    },
-
-                    resourceId
-                );
+        if (chosen.empty()) throw ConflictError("No available resource satisfies this incident's requirements (" +
+            std::to_string(rk.rejectedUnavailable) + " unavailable, " + std::to_string(rk.rejectedCapability) + " lacking capabilities)");
+    } else {
+        // manual selection — validated and explained, same scoring for the record
+        RankOptions opt; opt.limit = 1000;
+        RankingResult rk = ranking_.rankForIncident(inc.id, opt);
+        for (const auto& it : req.items) {
+            const Resource* r = s.resources.get(it.resourceId);
+            if (!r) throw NotFoundError("Resource " + std::to_string(it.resourceId) + " not found");
+            if (it.units < 1) throw ValidationError("Units must be at least 1 for " + r->code);
+            if (r->status != ResourceStatus::Available) throw ConflictError(r->code + " is " + toString(r->status) + " and cannot be allocated");
+            if (it.units > r->available) throw ConflictError(r->code + " has only " + std::to_string(r->available) + " unit(s) free");
+            if (r->capacity == 1 && s.windowsOf(s.commitments, r->id).anyOverlap(now, OPEN_END)) throw ConflictError(r->code + " is already committed to another active deployment");
+            if (s.links.find(inc.id, r->id)) throw ConflictError(r->code + " is already deployed to this incident");
+            if (chosen.findIndex([&](const DeploymentResource& d) { return d.resourceId == r->id; }) >= 0) throw ValidationError("Duplicate resource " + r->code + " in request");
+            DeploymentResource dr;
+            dr.resourceId = r->id; dr.resourceCode = r->code; dr.units = it.units;
+            long idx = rk.candidates.findIndex([&](const RankedResource& c) { return c.resourceId == r->id; });
+            if (idx >= 0) {
+                const RankedResource& c = rk.candidates[idx];
+                dr.suitability = c.score; dr.routeKm = c.roadKm; dr.etaMinutes = c.etaMinutes;
+                dr.reason = "Operator-selected (rank " + std::to_string(idx + 1) + " of " + std::to_string(rk.candidates.size()) + ", suitability " + fmt1(c.score) + "): " + c.reason;
+            } else {
+                // not in the ranked pool (e.g. capability mismatch or far away) — still allowed, but recorded
+                RouteResult route = network_.routeBetweenPoints(r->lat, r->lon, inc.lat, inc.lon, ds::WeightMode::Distance);
+                dr.routeKm = route.found ? route.distanceKm : 0;
+                dr.etaMinutes = route.found ? route.minutes : 0;
+                dr.reason = "Operator override: resource was outside the ranked candidate pool (capability mismatch or distance)";
             }
-        );
-    }
-
-    void AllocationService::allocate(
-        unsigned long long incidentId,
-        unsigned long long resourceId,
-        unsigned int units,
-        OperationCallback callback)
-{
-        allocate(
-            incidentId,
-            resourceId,
-            units,
-            std::nullopt,
-            std::move(callback)
-        );
-    }
-
-    void AllocationService::releaseAllocation(
-        unsigned long long allocationId,
-        OperationCallback callback)
-{
-        if (!callback)
-            return;
-
-        if (!dbClient)
-        {
-            callback(false, "Database client is unavailable");
-            return;
+            chosen.pushBack(dr);
         }
-
-        if (allocationId == 0)
-        {
-            callback(false, "Invalid allocation ID");
-            return;
-        }
-
-        auto state =
-            std::make_shared<CompletionState>(std::move(callback));
-
-        dbClient->newTransactionAsync(
-            [=](const std::shared_ptr<drogon::orm::Transaction>& trans)
-            {
-                if (!trans)
-                {
-                    state->finish(
-                        false,
-                        "Could not create database transaction"
-                    );
-                    return;
-                }
-
-                auto fail = [trans, state](
-                    const std::string& message)
-                {
-                    trans->rollback();
-                    state->finish(false, message);
-                };
-
-                trans->setCommitCallback(
-                    [state](bool committed)
-                    {
-                        state->finish(
-                            committed,
-                            committed
-                                ? "Resource allocation released successfully"
-                                : "Allocation release commit failed"
-                        );
-                    }
-                );
-
-                // STEP 1: Lock allocation record.
-                trans->execSqlAsync(
-                    "SELECT resource_id, incident_id, "
-                    "allocated_units, status, "
-                    "COALESCE(request_id, 0) AS request_id "
-                    "FROM resource_allocations "
-                    "WHERE allocation_id = ? FOR UPDATE",
-
-                    [=](const drogon::orm::Result& allocationResult)
-                    {
-                        if (allocationResult.empty())
-                        {
-                            fail("Allocation record not found");
-                            return;
-                        }
-
-                        const unsigned long long resourceId =
-                            allocationResult[0]["resource_id"]
-                                .as<unsigned long long>();
-
-                        const unsigned long long incidentId =
-                            allocationResult[0]["incident_id"]
-                                .as<unsigned long long>();
-
-                        const unsigned int units =
-                            allocationResult[0]["allocated_units"]
-                                .as<unsigned int>();
-
-                        const unsigned long long requestId =
-                            allocationResult[0]["request_id"]
-                                .as<unsigned long long>();
-
-                        const std::string allocationStatus =
-                            allocationResult[0]["status"]
-                                .as<std::string>();
-
-                        if (units == 0)
-                        {
-                            fail("Allocation has invalid unit quantity");
-                            return;
-                        }
-
-                        if (allocationStatus != "ASSIGNED" &&
-                            allocationStatus != "DISPATCHED" &&
-                            allocationStatus != "ON_SITE")
-                        {
-                            fail(
-                                "Allocation cannot be released. "
-                                "It may already be completed or cancelled"
-                            );
-                            return;
-                        }
-
-                        // STEP 2: Lock associated resource.
-                        trans->execSqlAsync(
-                            "SELECT total_units, available_units, status "
-                            "FROM resources "
-                            "WHERE resource_id = ? FOR UPDATE",
-
-                            [=](const drogon::orm::Result& resourceResult)
-                            {
-                                if (resourceResult.empty())
-                                {
-                                    fail("Associated resource not found");
-                                    return;
-                                }
-
-                                const unsigned int totalUnits =
-                                    resourceResult[0]["total_units"]
-                                        .as<unsigned int>();
-
-                                const unsigned int availableUnits =
-                                    resourceResult[0]["available_units"]
-                                        .as<unsigned int>();
-
-                                if (availableUnits > totalUnits ||
-                                    units > totalUnits - availableUnits)
-                                {
-                                    fail(
-                                        "Inventory integrity check failed. "
-                                        "Cannot restore allocated units"
-                                    );
-                                    return;
-                                }
-
-                                // STEP 3: Restore resource inventory.
-                                trans->execSqlAsync(
-                                    "UPDATE resources SET "
-                                    "available_units = available_units + ?, "
-                                    "status = CASE "
-                                    "WHEN status IN "
-                                    "('MAINTENANCE', 'UNAVAILABLE') "
-                                    "THEN status "
-                                    "ELSE 'AVAILABLE' END "
-                                    "WHERE resource_id = ? "
-                                    "AND available_units + ? <= total_units",
-
-                                    [=](const drogon::orm::Result& updateResult)
-                                    {
-                                        if (updateResult.affectedRows() != 1)
-                                        {
-                                            fail(
-                                                "Could not restore resource "
-                                                "inventory"
-                                            );
-                                            return;
-                                        }
-
-                                        // STEP 4: Mark allocation completed.
-                                        trans->execSqlAsync(
-                                            "UPDATE resource_allocations "
-                                            "SET status = 'COMPLETED', "
-                                            "released_at = NOW() "
-                                            "WHERE allocation_id = ? "
-                                            "AND status IN "
-                                            "('ASSIGNED', 'DISPATCHED', 'ON_SITE')",
-
-                                            [=](const drogon::orm::Result& allocationUpdate)
-                                            {
-                                                if (allocationUpdate.affectedRows() != 1)
-                                                {
-                                                    fail(
-                                                        "Could not update "
-                                                        "allocation status"
-                                                    );
-                                                    return;
-                                                }
-
-                                                // STEP 5: Record incident event.
-                                                trans->execSqlAsync(
-                                                    "INSERT INTO incident_events "
-                                                    "(incident_id, event_type, description) "
-                                                    "VALUES (?, ?, ?)",
-
-                                                    [=](const drogon::orm::Result&)
-                                                    {
-                                                        if (requestId == 0)
-                                                            return;
-
-                                                        refreshRequestStatus(
-                                                            trans,
-                                                            requestId,
-                                                            []() {},
-                                                            [=](const std::string& message)
-                                                            {
-                                                                fail(message);
-                                                            }
-                                                        );
-                                                    },
-
-                                                    [=](const drogon::orm::DrogonDbException& e)
-                                                    {
-                                                        fail(e.base().what());
-                                                    },
-
-                                                    incidentId,
-                                                    std::string("RESOURCE_RELEASED"),
-                                                    std::string(
-                                                        "Allocated resource units "
-                                                        "were returned to inventory"
-                                                    )
-                                                );
-                                            },
-
-                                            [=](const drogon::orm::DrogonDbException& e)
-                                            {
-                                                fail(e.base().what());
-                                            },
-
-                                            allocationId
-                                        );
-                                    },
-
-                                    [=](const drogon::orm::DrogonDbException& e)
-                                    {
-                                        fail(e.base().what());
-                                    },
-
-                                    units,
-                                    resourceId,
-                                    units
-                                );
-                            },
-
-                            [=](const drogon::orm::DrogonDbException& e)
-                            {
-                                fail(e.base().what());
-                            },
-
-                            resourceId
-                        );
-                    },
-
-                    [=](const drogon::orm::DrogonDbException& e)
-                    {
-                        fail(e.base().what());
-                    },
-
-                    allocationId
-                );
-            }
-        );
     }
-} // namespace nexa
+
+    // ---- 2. prepare all changes (nothing applied yet) ---------------------------
+    Deployment d;
+    d.incidentId = inc.id; d.requestId = req.requestId;
+    d.status = DeploymentStatus::Active;
+    d.createdAt = now; d.createdBy = actor; d.notes = req.notes;
+    d.resources = chosen;
+    DynamicArray<Resource> updated;
+    DynamicArray<IncidentEvent> events;
+    int totalUnits = 0;
+    for (const auto& dr : chosen) {
+        Resource r = *s.resources.get(dr.resourceId);
+        r.available -= dr.units;
+        if (r.available == 0) r.status = ResourceStatus::Deployed;
+        r.updatedAt = now;
+        updated.pushBack(r);
+        totalUnits += dr.units;
+        IncidentEvent e; e.incidentId = inc.id; e.type = "DEPLOYED"; e.actor = actor; e.createdAt = now;
+        e.message = dr.resourceCode + " × " + std::to_string(dr.units) + " dispatched — " + fmt1(dr.routeKm) + " km, ETA ~" +
+                    std::to_string((int)std::round(dr.etaMinutes)) + " min. " + dr.reason;
+        events.pushBack(e);
+    }
+    inc.assignedUnits += totalUnits;
+    if (inc.status == IncidentStatus::Pending) {
+        inc.status = IncidentStatus::Active;
+        IncidentEvent e; e.incidentId = inc.id; e.type = "STATUS_CHANGED"; e.actor = "allocation-engine"; e.createdAt = now;
+        e.message = "Status → ACTIVE (first resources dispatched)";
+        events.pushBack(e);
+    }
+    inc.updatedAt = now;
+    EmergencyRequest reqCopy;
+    if (reqPtr) { reqCopy = *reqPtr; reqCopy.status = RequestStatus::Fulfilled; reqCopy.processedAt = now; }
+
+    // ---- 3. ONE transaction -----------------------------------------------------
+    try {
+        ctx_.repos.deployments->commitAllocation(d, updated, events, reqPtr ? &reqCopy : nullptr, &inc);
+    } catch (const NexaError&) {
+        throw;
+    } catch (const std::exception& ex) {
+        throw PersistenceError(std::string("Allocation rolled back: ") + ex.what());
+    }
+
+    // ---- 4. apply to in-memory structures (only after commit) ---------------
+    s.deployments.upsert(d);
+    indexDeployment(d);
+    for (const auto& r : updated) {
+        *s.resources.get(r.id) = r;
+        resources_.recordHistory(r.id, "DEPLOYED", "Deployment #" + std::to_string(d.id) + " to " + inc.code, true);
+        ctx_.sink.publish(LiveEvent{"resource.updated", r.id, r.code + " " + r.name, toString(r.status), r.lat, r.lon});
+    }
+    *s.incidents.get(inc.id) = inc;
+    for (const auto& e : events) s.timeline(inc.id).insertBack(e);
+    if (reqPtr) {
+        reqCopy.deploymentId = d.id;
+        *s.requests.get(reqCopy.id) = reqCopy;
+        s.requestLog(reqCopy.id).insertBack(util::isoTime(now) + " fulfilled by deployment #" + std::to_string(d.id));
+    }
+    double p = priority_.refresh(inc.id);
+    audit_.record("AUDIT", "allocation", "deployment #" + std::to_string(d.id) + " -> " + inc.code + " (" + std::to_string(totalUnits) + " units)", actor);
+    ctx_.sink.publish(LiveEvent{"deployment.created", d.id, inc.code + " " + inc.title,
+                                std::to_string(chosen.size()) + " resource(s) dispatched; priority now " + std::to_string((int)p), inc.lat, inc.lon, inc.severity});
+    return *s.deployments.get(d.id);
+}
+
+Deployment AllocationService::release(long deploymentId, DeploymentStatus finalStatus, const std::string& actor, const std::string& reason, long onlyResourceId) {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    auto& s = ctx_.store;
+    const Deployment* dp = s.deployments.get(deploymentId);
+    if (!dp) throw NotFoundError("Deployment " + std::to_string(deploymentId) + " not found");
+    if (dp->status != DeploymentStatus::Active) throw ConflictError("Deployment is already " + std::string(toString(dp->status)));
+    Deployment d = *dp;
+    Incident inc = *s.incidents.get(d.incidentId);
+    long now = util::nowEpoch();
+    DynamicArray<Resource> updated;
+    DynamicArray<IncidentEvent> events;
+    DynamicArray<DeploymentResource> releasedNow;
+    for (auto& dr : d.resources) {
+        if (dr.released || (onlyResourceId && dr.resourceId != onlyResourceId)) continue;
+        Resource r = *s.resources.get(dr.resourceId);
+        r.available += dr.units;
+        if (r.available > r.capacity) r.available = r.capacity;
+        if (r.status == ResourceStatus::Deployed) r.status = ResourceStatus::Available;
+        r.updatedAt = now;
+        updated.pushBack(r);
+        dr.released = true; dr.releasedAt = now;
+        releasedNow.pushBack(dr);
+        inc.assignedUnits -= dr.units;
+        IncidentEvent e; e.incidentId = inc.id; e.type = "RELEASED"; e.actor = actor; e.createdAt = now;
+        e.message = dr.resourceCode + " released (" + std::string(toString(finalStatus)) + ")" + (reason.empty() ? "" : " — " + reason);
+        events.pushBack(e);
+    }
+    if (releasedNow.empty()) throw NotFoundError("Resource is not part of this active deployment");
+    if (inc.assignedUnits < 0) inc.assignedUnits = 0;
+    bool allReleased = true;
+    for (const auto& dr : d.resources) if (!dr.released) allReleased = false;
+    if (allReleased) { d.status = finalStatus; d.completedAt = now; }
+    inc.updatedAt = now;
+
+    ctx_.repos.deployments->commitRelease(d, updated, events, &inc);   // ONE transaction
+
+    for (const auto& dr : releasedNow) {
+        s.links.unlink(d.incidentId, dr.resourceId);
+        s.unitsMatrix.add(d.incidentId, dr.resourceId, -dr.units);
+        s.windowsOf(s.commitments, dr.resourceId).remove(d.id, d.createdAt);
+    }
+    for (const auto& r : updated) {
+        *s.resources.get(r.id) = r;
+        resources_.recordHistory(r.id, "RELEASED", "Released from deployment #" + std::to_string(d.id), true);
+        ctx_.sink.publish(LiveEvent{"resource.updated", r.id, r.code + " " + r.name, toString(r.status), r.lat, r.lon});
+    }
+    *s.deployments.get(d.id) = d;
+    *s.incidents.get(inc.id) = inc;
+    for (const auto& e : events) s.timeline(inc.id).insertBack(e);
+    priority_.refresh(inc.id);
+    audit_.record("AUDIT", "allocation", "deployment #" + std::to_string(d.id) + " " + toString(d.status), actor);
+    ctx_.sink.publish(LiveEvent{"deployment.closed", d.id, inc.code + " " + inc.title, toString(d.status), inc.lat, inc.lon, inc.severity});
+    return d;
+}
+
+Deployment AllocationService::complete(long id, const std::string& actor) { return release(id, DeploymentStatus::Completed, actor, "mission complete"); }
+Deployment AllocationService::cancel(long id, const std::string& actor, const std::string& reason) { return release(id, DeploymentStatus::Cancelled, actor, reason.empty() ? "cancelled" : reason); }
+
+Deployment AllocationService::reassign(long resourceId, long fromDeploymentId, long toIncidentId, const std::string& actor) {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    const Deployment* dp = ctx_.store.deployments.get(fromDeploymentId);
+    if (!dp) throw NotFoundError("Deployment not found");
+    if (dp->incidentId == toIncidentId) throw ValidationError("Resource is already serving that incident");
+    if (!ctx_.store.incidents.contains(toIncidentId)) throw NotFoundError("Target incident not found");
+    int units = 0;
+    for (const auto& dr : dp->resources) if (dr.resourceId == resourceId && !dr.released) units = dr.units;
+    if (!units) throw NotFoundError("Resource is not active in that deployment");
+    release(fromDeploymentId, DeploymentStatus::Completed, actor, "reassigned to incident #" + std::to_string(toIncidentId), resourceId);
+    AllocationRequest req;
+    req.incidentId = toIncidentId;
+    req.items.pushBack(AllocationItem{resourceId, units});
+    req.notes = "Reassigned from deployment #" + std::to_string(fromDeploymentId);
+    return allocate(req, actor);
+}
+
+DynamicArray<Deployment> AllocationService::list(const std::string& status) {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    DynamicArray<Deployment> out;
+    ctx_.store.deployments.forEachOrdered([&](const Deployment& d) { if (status.empty() || status == toString(d.status)) out.pushBack(d); });
+    algo::mergeSort(out, [](const Deployment& a, const Deployment& b) { return a.createdAt > b.createdAt || (a.createdAt == b.createdAt && a.id > b.id); });
+    return out;
+}
+
+Deployment AllocationService::get(long id) {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    const Deployment* d = ctx_.store.deployments.get(id);
+    if (!d) throw NotFoundError("Deployment " + std::to_string(id) + " not found");
+    return *d;
+}
+
+AllocationMatrixView AllocationService::matrix() {
+    std::lock_guard<std::recursive_mutex> g(ctx_.store.mtx);
+    auto& s = ctx_.store;
+    AllocationMatrixView v;
+    ds::HashTable<long, bool> rows, cols;
+    for (const auto& e : s.unitsMatrix.entries()) {
+        MatrixCell c; c.incidentId = e.row; c.resourceId = e.col; c.units = e.value;
+        if (const Incident* i = s.incidents.get(e.row)) c.incidentCode = i->code;
+        if (const Resource* r = s.resources.get(e.col)) c.resourceCode = r->code;
+        v.cells.pushBack(c);
+        rows.insert(e.row, true); cols.insert(e.col, true);
+    }
+    v.rows = s.incidents.size(); v.cols = s.resources.size();
+    v.density = (v.rows && v.cols) ? (double)v.cells.size() / ((double)v.rows * (double)v.cols) : 0;
+    v.sparseBytes = v.cells.size() * sizeof(ds::SparseMatrix<int>::Entry);
+    v.denseBytes = v.rows * v.cols * sizeof(int);
+    return v;
+}
+
+} // namespace nexa::svc
